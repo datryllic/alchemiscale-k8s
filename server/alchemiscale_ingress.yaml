@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alchemiscale-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: alchemiscale
+  rules:
+  - http:
+    paths:
+    - path: /
+      pathType: Prefix
+      backend:
+        service:
+          name: clientapi
+          port:
+            number: 1840

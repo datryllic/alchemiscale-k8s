@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug
+  labels:
+    app: debug
+spec:  
+    containers:
+    - name: debug
+      image: busybox
+      envFrom:
+        - configMapRef:
+            name: alchemiscale-configmap
+      command: ["sleep", "3600"]
