@@ -2,25 +2,29 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: alchemiscale-ingress
+  namespace: alchemiscale
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
 spec:
-  ingressClassName: nginx
+  ingressClassName: alb
   rules:
-  - host: api.alchemiscaleserver.local
+  - host: api.alchemiscale.internal
     http:
       paths:
       - backend:
           service:
-            name: clientapi-service
+            name: alchemiscale-clientapi-service
             port:
               number: 1840
         path: /
         pathType: Prefix
-  - host: compute.alchemiscaleserver.local
+  - host: compute.alchemiscale.internal
     http:
       paths:
       - backend:
           service:
-            name: computeapi-service
+            name: alchemiscale-computeapi-service
             port:
               number: 1841
         path: /

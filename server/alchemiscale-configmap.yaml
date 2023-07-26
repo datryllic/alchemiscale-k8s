@@ -2,14 +2,15 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: alchemiscale-configmap
+  namespace: alchemiscale
 data:
 
   # neo4j
-  NEO4J_URL: bolt://neo4j-service:7687  # TODO this should just work with 'neo4j-service'
+  NEO4J_URL: bolt://alchemiscale-neo4j-service:7687
 
   # api services
-  computeAPI_url: computeapi-service
-  clientAPI_url: clientapi-service
+  ALCHEMISCALE_API_URL: http://alchemiscale-computeapi-service
+  ALCHEMISCALE_COMPUTE_API_URL: http://alchemiscale-clientapi-service
 
   # jwt
   JWT_EXPIRE_SECONDS: "3600"

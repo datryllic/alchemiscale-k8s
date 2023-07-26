@@ -1,22 +1,32 @@
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: neo4j-data
+  name: alchemiscale-neo4j-data
+  namespace: alchemiscale
 spec:
   capacity:
     storage: 5Gi
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: #  Set the local storage path for the persistent volume
-  storageClassName: neo4j-data
+    path: /alchemiscale-neo4j/data #  Set the local storage path for the persistent volume
+  storageClassName: alchemiscale-neo4j-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+          - key: type
+            operator: In
+            values:
+            - database
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: neo4j-data-claim
+  name: alchemiscale-neo4j-data-claim
+  namespace: alchemiscale
 spec:
-  storageClassName: neo4j-data
+  storageClassName: alchemiscale-neo4j-data
   accessModes:
     - ReadWriteOnce
   resources:
@@ -26,24 +36,25 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: neo4j
+  name: alchemiscale-neo4j
+  namespace: alchemiscale
 spec:
   selector:
     matchLabels:
-      app: neo4j
+      app: alchemiscale-neo4j
   serviceName: "neo4j-service"
   replicas: 1
   template:
     metadata:
       labels:
-        app: neo4j
+        app: alchemiscale-neo4j
     spec:
       containers:
       - name: neo4j
         image: neo4j:4.4
         envFrom:
           - secretRef:
-              name: neo4j-secrets
+              name: alchemiscale-neo4j-secrets
         ports:
             - name: bolt
               protocol: TCP
@@ -52,20 +63,21 @@ spec:
               protocol: TCP
               containerPort: 7474
         volumeMounts:
-          - name: neo4j-data-storage
+          - name: alchemiscale-neo4j-data-storage
             mountPath: /var/lib/neo4j/data
       volumes:
-        - name: neo4j-data-storage
+        - name: alchemiscale-neo4j-data-storage
           persistentVolumeClaim:
-            claimName: neo4j-data-claim
+            claimName: alchemiscale-neo4j-data-claim
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: neo4j-service
+  name: alchemiscale-neo4j-service
+  namespace: alchemiscale
 spec:
   selector:
-    app: neo4j
+    app: alchemiscale-neo4j
   ports:
   - port: 7687
     name: bolt
