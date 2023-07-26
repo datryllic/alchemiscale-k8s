@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alchemiscale-synchronouscompute
+  namespace: alchemiscale
+  labels:
+    app: alchemiscale-synchronouscompute
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: alchemiscale-synchronouscompute
+  template:
+    metadata:
+      labels:
+        app: alchemiscale-synchronouscompute
+    spec:
+      containers:
+      - name: alchemiscale-synchronous-container
+        image: ghcr.io/openforcefield/alchemiscale-compute:0.1.3-3
+        args: ["compute", "synchronous", "-c", "/mnt/settings/synchronous-compute-settings.yaml"]
+        resources:
+          limits:
+            cpu: 2
+            memory: 12Gi
+            ephemeral-storage: 48Gi
+            nvidia.com/gpu: 1
+          requests:
+            cpu: 2
+            memory: 12Gi
+            ephemeral-storage: 48Gi
+        volumeMounts:
+          - name: alchemiscale-compute-settings-yaml
+            mountPath: "/mnt/settings"
+            readOnly: true
+        env:
+          - name: OPENMM_CPU_THREADS
+            value: "4"
+      volumes:
+        - name: alchemiscale-compute-settings-yaml
+          secret:
+            secretName: alchemiscale-compute-settings-yaml
