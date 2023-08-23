@@ -20,7 +20,7 @@ To deploy `alchemiscale` to a k8s cluster:
 
 6. Deploy ingress: `kubectl apply -f server/alchemiscale-ingress.yaml`
 
-Follow [instructions for creating user and compute identities](https://docs.alchemiscale.org/en/latest/operations.html#add-users); use `kubectl exec` instead of `docker run` for these calls.
+7. Follow [instructions for creating user and compute identities](https://docs.alchemiscale.org/en/latest/operations.html#add-users); use `kubectl exec` instead of `docker run` for these calls.
 You will need at least one user identity and one compute identity with permissions on at least one ``Scope`` to make use of ``alchemiscale``.
 
 8. Set your desired settings for the compute services in [compute/synchronous-compute-settings.yaml](compute/synchronous-compute-settings.yaml).
