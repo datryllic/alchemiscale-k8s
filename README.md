@@ -16,7 +16,7 @@ To deploy `alchemiscale` to a k8s cluster:
 
 4. Deploy neo4j: `kubectl apply -f server/neo4j-statefulset.yaml`.
 
-5. Deploy client and compute APIs: `kubectl apply -f server/*api-deployment.yaml
+5. Deploy client and compute APIs: `kubectl apply -f server/*api-deployment.yaml`
 
 6. Deploy ingress: `kubectl apply -f server/alchemiscale-ingress.yaml`
 
