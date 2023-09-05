@@ -7,10 +7,10 @@ This repo presents a fairly complete set of kubernetes ("k8s") resources that gi
 
 To deploy `alchemiscale` to a k8s cluster:
 
-1. Set your desired secrets for the server components in [server/secrets.sh](server/secrets.sh).
-   Deploy: `bash server/secrets.sh`.
+1. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
 
-2. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
+2. Set your desired secrets for the server components in [server/secrets.sh](server/secrets.sh).
+   Deploy: `bash server/secrets.sh`.
 
 3. Deploy configmap: `kubectl apply -f server/alchemiscale-configmap.yaml`.
 
