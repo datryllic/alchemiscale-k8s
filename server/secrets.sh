@@ -5,7 +5,7 @@ kubectl -n alchemiscale delete secret alchemiscale-aws-secrets
 kubectl -n alchemiscale delete secret alchemiscale-jwt-secrets 
 
 # neo4j
-USER=""
+USER="neo4j"  # for Neo4j community edition, must be `neo4j`
 PASS=""
 kubectl -n alchemiscale create secret generic alchemiscale-neo4j-secrets --from-literal="NEO4J_USER=$USER"\
                                                          --from-literal="NEO4J_PASS=$PASS"\
