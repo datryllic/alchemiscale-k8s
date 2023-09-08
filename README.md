@@ -10,6 +10,7 @@ To deploy `alchemiscale` to a k8s cluster:
 1. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
 
 2. Set your desired secrets for the server components in [server/secrets.sh](server/secrets.sh).
+   Take note of the recommendations in the comments guiding you on the choices.
    Deploy: `bash server/secrets.sh`.
 
 3. Deploy configmap: `kubectl apply -f server/alchemiscale-configmap.yaml`.
@@ -25,6 +26,7 @@ You will need at least one user identity and one compute identity with permissio
 
 8. Set your desired settings for the compute services in [compute/synchronous-compute-settings.yaml](compute/synchronous-compute-settings.yaml).
    Deploy these as a secret: `bash compute/secrets.sh`.
+   Refer to the [alchemiscale compute documentation](https://docs.alchemiscale.org/en/latest/compute.html#kubernetes-cluster) for more details.
 
 9. Set desired number of replicas in [compute/compute-services.yaml](compute/compute-services.yaml).
    Deploy compute services: `kubectl apply -f compute/compute-services.yaml`
