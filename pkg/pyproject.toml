@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+dynamic = ["version"]
+name = "alchemiscalek8s"
+authors = [
+  {name = "Ian Kenney", email = "ianmichaelkenney@gmail.com"},
+]
+maintainers = [
+  {name = "Ian Kenney", email = "ianmichaelkenney@gmail.com"},
+]
+description = "alchemiscale tools for use with kubernetes"
+readme = "README.md"
+license = "MIT"
+
+[project.urls]
+Repository = "https://github.com/datryllic/alchemiscale-k8s"
+Issues = "https://github.com/datryllic/alchemiscale-k8s/issues"
+
+[project.scripts]
+alchemiscalek8s = "alchemiscalek8s.cli:cli"
+
+[project.optional-dependencies]
+test = ["pytest"]

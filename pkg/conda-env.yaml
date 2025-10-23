@@ -1,0 +1,8 @@
+name: alchemiscalek8s
+channels:
+  - conda-forge
+
+dependencies:
+  - alchemiscale-compute
+  - python-kubernetes
+  - click
