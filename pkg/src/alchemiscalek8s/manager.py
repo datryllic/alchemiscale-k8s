@@ -10,15 +10,46 @@ from alchemiscale.compute.manager import (
 from kubernetes import client, config
 
 
+class JobNotFoundError(Exception):
+    pass
+
+
 class K8SManager(ComputeManager):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.job_registry: list[str] = []
         config.load_kube_config()
         self.batch_api = client.BatchV1Api()
 
     def create_compute_services(self, data):
-        self.create_compute_service()
+        compute_service_ids = data["compute_service_ids"]
+        current_jobs = self._get_jobs()
+        server_job_names = {csid.split("-")[0] for csid in compute_service_ids}
+
+        for server_job_name in server_job_names:
+            # check that all compute services reported by the server
+            # are active jobs. Job records linger for 10 seconds after
+            # the server has deregistered, so if this doesn't hold,
+            # it's likely there is a deregistration problem, fail to
+            # be safe.  TODO: maybe leave completed jobs and delete
+            # their references here for future debugging.
+            if server_job_name not in current_jobs:
+                raise JobNotFoundError(f"{server_job_name} is not an active job")
+
+        # check that all running jobs are reported by the server, fail if not found
+        for job in current_jobs:
+            if job not in server_job_names:
+                raise JobNotFoundError(
+                    f"{job} not reported by the server, possible registration issues"
+                )
+
+        # from here we know we're synced the the number of running
+        # jobs is the true number of jobs
+        self.submit_job(self.new_job())
+        return 1
+
+    def _get_jobs(self):
+        # TODO: use a selector
+        return self.client.list_namespaced_job(namespace="alchemiscale").items
 
     def create_compute_service(self):
         self.submit_job(self.new_job())
@@ -57,7 +88,6 @@ class K8SManager(ComputeManager):
             ],
             env=[client.V1EnvVar(name="OPENMM_CPU_THREADS", value="4")],
         )
-
         volume = client.V1Volume(
             name="alchemiscale-compute-settings-yaml",
             secret=client.V1SecretVolumeSource(
@@ -97,4 +127,3 @@ class K8SManager(ComputeManager):
         jobname = job.metadata.name
         # TODO: handle exceptions
         self.batch_api.create_namespaced_job(namespace="default", body=job)
-        self.job_registry.append(jobname)
