@@ -5,9 +5,11 @@ from alchemiscale.compute.settings import ComputeManagerSettings, ComputeService
 from alchemiscale.security.models import CredentialedComputeIdentity
 from alchemiscalek8s.manager import K8SManager
 
+
 @click.group()
 def cli():
     pass
+
 
 @cli.command(name="manager")
 @click.option(
