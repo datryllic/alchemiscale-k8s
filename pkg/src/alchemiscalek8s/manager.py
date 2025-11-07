@@ -14,47 +14,79 @@ class JobNotFoundError(Exception):
     pass
 
 
+class JobFailureError(Exception):
+    pass
+
+
 class K8SManager(ComputeManager):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         config.load_kube_config()
         self.batch_api = client.BatchV1Api()
 
-    def create_compute_services(self, data):
-        compute_service_ids = data["compute_service_ids"]
-        current_jobs = self._get_jobs()
-        server_job_names = {csid.split("-")[0] for csid in compute_service_ids}
-
-        for server_job_name in server_job_names:
-            # check that all compute services reported by the server
-            # are active jobs. Job records linger for 10 seconds after
-            # the server has deregistered, so if this doesn't hold,
-            # it's likely there is a deregistration problem, fail to
-            # be safe.  TODO: maybe leave completed jobs and delete
-            # their references here for future debugging.
-            if server_job_name not in current_jobs:
-                raise JobNotFoundError(f"{server_job_name} is not an active job")
-
-        # check that all running jobs are reported by the server, fail if not found
-        for job in current_jobs:
-            if job not in server_job_names:
-                raise JobNotFoundError(
-                    f"{job} not reported by the server, possible registration issues"
+    def _check_job_health(self):
+        for job in self._get_jobs():
+            if job.status.failed:
+                raise JobFailureError(
+                    f"Job `{job.metadata.name}` failed, check its status and remove it before restarting the manager.",
                 )
 
-        # from here we know we're synced the the number of running
-        # jobs is the true number of jobs
-        self.submit_job(self.new_job())
-        return 1
+    def _delete_job(self, job):
+        self.batch_api.delete_namespaced_job(
+            name=job.metadata.name,
+            namespace=job.metadata.namespace,
+            propagation_policy="Foreground",
+        )
+
+    def _verify_running_jobs(self, server_job_names):
+        for job in self._get_jobs():
+            # all ready jobs should be registered
+            if job.status.ready and job.metadata.name not in server_job_names:
+                raise JobNotFoundError(
+                    f"{job.metadata.name} not reported by the server, possible registration issues"
+                )
+
+    def _clear_successful_jobs(self):
+        for job in self._get_jobs():
+            if job.status.succeeded:
+                self._delete_job(job)
+
+    def _clear_failed_jobs(self):
+        for job in self._get_jobs():
+            if job.status.failed:
+                self._delete_job(job)
+
+    def _jobs_pending(self):
+        for job in self._get_jobs():
+            if job.status.active and not job.status.ready:
+                return True
+        return False
+
+    def create_compute_services(self, data):
+        import time
+
+        # self.logger.info("Clearing failed Jobs"); self._clear_failed_jobs(); time.sleep(1)
+        compute_service_ids = data["compute_service_ids"]
+        server_job_names = {csid.split("-")[0] for csid in compute_service_ids}
+
+        self.logger.info("Checking health of Jobs")
+        self._check_job_health()
+        self.logger.info(
+            "Checking consistency of ready jobs with alchemiscale compute API"
+        )
+        self._verify_running_jobs(server_job_names)
+        self.logger.info("Clearing successful jobs")
+        self._clear_successful_jobs()
+        if not self._jobs_pending():
+            self._submit_job(self._new_job())
+            return 1
+        self.logger.info("Skipping Job creation, pending Jobs exist")
+        return 0
 
     def _get_jobs(self):
-        # TODO: use a selector
-        return self.client.list_namespaced_job(namespace="alchemiscale").items
+        return self.batch_api.list_namespaced_job(namespace="alchemiscale").items
 
-    def create_compute_service(self):
-        self.submit_job(self.new_job())
-
-    def new_job(self):
+    def _new_job(self):
         compute_version = "0.1.3-3"
         container = client.V1Container(
             name="alchemiscale-synchronous-container",
@@ -91,7 +123,7 @@ class K8SManager(ComputeManager):
         volume = client.V1Volume(
             name="alchemiscale-compute-settings-yaml",
             secret=client.V1SecretVolumeSource(
-                secretName="alchemiscale-compute-settings-yaml",
+                secret_name="alchemiscale-compute-settings-yaml",
             ),
         )
         template = client.V1PodTemplateSpec(
@@ -105,10 +137,6 @@ class K8SManager(ComputeManager):
         spec = client.V1JobSpec(
             template=template,
             backoff_limit=0,
-            ttl_seconds_after_finished=5,
-            selector=client.V1LabelSelector(
-                match_labels={"app": "alchemiscale-synchronouscompute"}
-            ),
         )
         job_id = str(int(uuid4()))
         job = client.V1Job(
@@ -123,7 +151,7 @@ class K8SManager(ComputeManager):
         )
         return job
 
-    def submit_job(self, job):
+    def _submit_job(self, job):
         jobname = job.metadata.name
         # TODO: handle exceptions
-        self.batch_api.create_namespaced_job(namespace="default", body=job)
+        self.batch_api.create_namespaced_job(namespace="alchemiscale", body=job)
