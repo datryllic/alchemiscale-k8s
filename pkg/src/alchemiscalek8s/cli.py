@@ -3,7 +3,7 @@ import yaml
 
 from alchemiscale.compute.settings import ComputeManagerSettings, ComputeServiceSettings
 from alchemiscale.security.models import CredentialedComputeIdentity
-from alchemiscalek8s.manager import K8SManager
+from alchemiscalek8s.manager import K8SManager, K8SBatchApi
 
 
 @click.group()
@@ -36,3 +36,14 @@ def manager_start(config_file, service_config_file):
     service_settings = ComputeServiceSettings(**yaml.safe_load(service_config_file))
     manager = K8SManager(manager_settings, service_settings)
     raise NotImplementedError
+
+
+@cli.group()
+def k8s():
+    pass
+
+
+@k8s.command(name="clearjobs")
+def k8s_clear_jobs():
+    batch_api = K8SBatchApi()
+    batch_api.clear_failed_jobs()
