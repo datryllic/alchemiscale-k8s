@@ -22,12 +22,13 @@ class JobFailureError(Exception):
 
 
 class K8SBatchApi:
-    def __init__(self):
+    def __init__(self, namespace):
         config.load_kube_config()
         self.batch_api = client.BatchV1Api()
+        self.namespace = namespace
 
-    def check_job_health(self, namespace="alchemiscale"):
-        for job in self.get_jobs(namespace=namespace):
+    def check_job_health(self):
+        for job in self.get_jobs():
             if job.status.failed:
                 raise JobFailureError(
                     f"Job `{job.metadata.name}` failed, check its status and remove it before restarting the manager.",
@@ -40,43 +41,43 @@ class K8SBatchApi:
             propagation_policy="Foreground",
         )
 
-    def verify_running_jobs(self, server_job_names, namespace="alchemiscale"):
-        for job in self.get_jobs(namespace=namespace):
+    def verify_running_jobs(self, server_job_names):
+        for job in self.get_jobs():
             # all ready jobs should be registered
             if job.status.ready and job.metadata.name not in server_job_names:
                 raise JobNotFoundError(
                     f"{job.metadata.name} not reported by the server, possible registration issues"
                 )
 
-    def clear_successful_jobs(self, namespace="alchemiscale"):
-        for job in self.get_jobs(namespace=namespace):
+    def clear_successful_jobs(self):
+        for job in self.get_jobs():
             if job.status.succeeded:
                 self.delete_job(job)
 
-    def clear_failed_jobs(self, namespace="alchemiscale"):
-        for job in self.get_jobs(namespace=namespace):
+    def clear_failed_jobs(self):
+        for job in self.get_jobs():
             if job.status.failed:
                 self.delete_job(job)
 
-    def jobs_pending(self, namespace="alchemiscale"):
-        for job in self.get_jobs(namespace=namespace):
+    def jobs_pending(self):
+        for job in self.get_jobs():
             if job.status.active and not job.status.ready:
                 return True
         return False
 
-    def get_jobs(self, namespace="alchemiscale"):
-        return self.batch_api.list_namespaced_job(namespace=namespace).items
+    def get_jobs(self):
+        return self.batch_api.list_namespaced_job(namespace=self.namespace).items
 
-    def submit_job(self, job, namespace="alchemiscale"):
+    def submit_job(self, job):
         jobname = job.metadata.name
         # TODO: handle exceptions
-        self.batch_api.create_namespaced_job(namespace=namespace, body=job)
+        self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
 
 
 class K8SManager(ComputeManager):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.batch_api = K8SBatchApi()
+        self.batch_api = K8SBatchApi(self.settings.namespace)
         with open(self.settings.job_spec_path, "r") as job_spec_file:
             self.job_spec = yaml.safe_load(job_spec_file)
 
@@ -141,7 +142,7 @@ class K8SManager(ComputeManager):
             ),
         )
 
-        volume = self.job_spec["volumes"][0]
+        volumes = self.job_spec["volumes"]
         container = self.job_spec["containers"][0]
 
         template = client.V1PodTemplateSpec(
@@ -149,7 +150,7 @@ class K8SManager(ComputeManager):
                 labels={"app": "alchemiscale-synchronouscompute"}
             ),
             spec=client.V1PodSpec(
-                restart_policy="Never", containers=[container], volumes=[volume]
+                restart_policy="Never", containers=[container], volumes=volumes
             ),
         )
         spec = client.V1JobSpec(
@@ -162,7 +163,7 @@ class K8SManager(ComputeManager):
             kind="Job",
             metadata=client.V1ObjectMeta(
                 name=f"{job_base_name}{job_id}",
-                namespace="alchemiscale",
+                namespace=self.settings.namespace,
                 labels={"app": "alchemiscale-synchronouscompute"},
             ),
             spec=spec,
