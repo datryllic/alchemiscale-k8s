@@ -11,7 +11,12 @@ def cli():
     pass
 
 
-@cli.command(name="manager")
+@cli.group()
+def manager():
+    pass
+
+
+@cli.command(name="start")
 @click.option(
     "-c",
     "--config-file",
@@ -26,7 +31,7 @@ def cli():
     type=click.File("r"),
     required=True,
 )
-def manager(config_file, service_config_file):
+def manager_start(config_file, service_config_file):
     manager_settings = ComputeManagerSettings(**yaml.safe_load(config_file))
     service_settings = ComputeServiceSettings(**yaml.safe_load(service_config_file))
     manager = K8SManager(manager_settings, service_settings)
