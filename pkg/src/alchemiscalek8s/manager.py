@@ -1,6 +1,8 @@
 from uuid import uuid4
 from time import sleep
 
+import yaml
+
 from alchemiscale.compute.manager import (
     ComputeManager,
     ComputeManagerSettings,
@@ -8,6 +10,7 @@ from alchemiscale.compute.manager import (
 )
 
 from kubernetes import client, config
+from kubernetes.utils import create_from_dict
 
 
 class JobNotFoundError(Exception):
@@ -74,6 +77,8 @@ class K8SManager(ComputeManager):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.batch_api = K8SBatchApi()
+        with open(self.settings.job_spec_path, "r") as job_spec_file:
+            self.job_spec = yaml.safe_load(job_spec_file)
 
     def create_compute_services(self, data):
         compute_service_ids = data["compute_service_ids"]
@@ -135,6 +140,10 @@ class K8SManager(ComputeManager):
                 secret_name="alchemiscale-compute-settings-yaml",
             ),
         )
+
+        volume = self.job_spec["volumes"][0]
+        container = self.job_spec["containers"][0]
+
         template = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(
                 labels={"app": "alchemiscale-synchronouscompute"}
