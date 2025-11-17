@@ -22,26 +22,38 @@ class JobFailureError(Exception):
 
 
 class K8SBatchApi:
+    """Wrapper around the python kubernetes client."""
+
     def __init__(self, namespace):
         config.load_kube_config()
         self.batch_api = client.BatchV1Api()
         self.namespace = namespace
 
     def check_job_health(self):
+        """Check for any failed jobs within the namespace.
+
+        If a job has any failed pods, this method raises a JobFailureError.
+        """
         for job in self.get_jobs():
             if job.status.failed:
                 raise JobFailureError(
                     f"Job `{job.metadata.name}` failed, check its status and remove it before restarting the manager.",
                 )
 
-    def delete_job(self, job):
+    def delete_job(self, job: client.V1Job):
+        """Delete a given job.
+
+        This must be a V1Job object.
+        """
+
         self.batch_api.delete_namespaced_job(
             name=job.metadata.name,
             namespace=job.metadata.namespace,
             propagation_policy="Foreground",
         )
 
-    def verify_running_jobs(self, server_job_names):
+    def verify_running_jobs(self, server_job_names: list[str]):
+        """Confirm that all jobs that are running are reported by the alchemiscale API."""
         for job in self.get_jobs():
             # all ready jobs should be registered
             if job.status.ready and job.metadata.name not in server_job_names:
@@ -50,25 +62,33 @@ class K8SBatchApi:
                 )
 
     def clear_successful_jobs(self):
+        """Remove all successful jobs."""
         for job in self.get_jobs():
             if job.status.succeeded:
                 self.delete_job(job)
 
     def clear_failed_jobs(self):
+        """Remove all failed jobs."""
         for job in self.get_jobs():
             if job.status.failed:
                 self.delete_job(job)
 
     def jobs_pending(self):
+        """Check for any pending jobs.
+
+        Jobs that are waiting for resources or building containers are considered pending.
+        """
         for job in self.get_jobs():
             if job.status.active and not job.status.ready:
                 return True
         return False
 
-    def get_jobs(self):
+    def get_jobs(self) -> list[client.V1Job]:
+        """Retrieve all job data under the namespace."""
         return self.batch_api.list_namespaced_job(namespace=self.namespace).items
 
     def submit_job(self, job):
+        """Submit a job to Kubernetes."""
         jobname = job.metadata.name
         # TODO: handle exceptions
         self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
@@ -100,69 +120,35 @@ class K8SManager(ComputeManager):
         self.logger.info("Skipping Job creation, pending Jobs exist")
         return 0
 
-    def _new_job(self, job_base_name=None):
-        job_base_name = job_base_name or f"{self.settings.name}job"
-        compute_version = "0.1.3-3"
-        container = client.V1Container(
-            name="alchemiscale-synchronous-container",
-            image=f"ghcr.io/openforcefield/alchemiscale-compute:{compute_version}",
-            args=[
-                "compute",
-                "synchronous",
-                "-c",
-                "/mnt/settings/synchronous-compute-settings.yaml",
-            ],
-            resources=client.V1ResourceRequirements(
-                limits={
-                    "cpu": "2",
-                    "memory": "12Gi",
-                    "ephemeral-storage": "48Gi",
-                    "nvidia.com/gpu": "1",
-                },
-                requests={
-                    "cpu": "2",
-                    "memory": "12Gi",
-                    "ephemeral-storage": "48Gi",
-                },
-            ),
-            restart_policy="Never",
-            volume_mounts=[
-                client.V1VolumeMount(
-                    name="alchemiscale-compute-settings-yaml",
-                    mount_path="/mnt/settings",
-                    read_only=True,
-                ),
-            ],
-            env=[client.V1EnvVar(name="OPENMM_CPU_THREADS", value="4")],
-        )
-        volume = client.V1Volume(
-            name="alchemiscale-compute-settings-yaml",
-            secret=client.V1SecretVolumeSource(
-                secret_name="alchemiscale-compute-settings-yaml",
-            ),
-        )
+    def _new_job(self, jobname_base=None):
+        jobname_base = jobname_base or f"{self.settings.name}job"
+        # cast as int to remove hyphens
+        job_id = str(int(uuid4()))
+        jobname = f"{jobname_base}{job_id}"
 
         volumes = self.job_spec["volumes"]
-        container = self.job_spec["containers"][0]
+        containers = self.job_spec["containers"]
+
+        # inject the job name at the command line
+        containers[0].args.extend(["-n", jobname])
 
         template = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(
                 labels={"app": "alchemiscale-synchronouscompute"}
             ),
             spec=client.V1PodSpec(
-                restart_policy="Never", containers=[container], volumes=volumes
+                restart_policy="Never", containers=containers, volumes=volumes
             ),
         )
         spec = client.V1JobSpec(
             template=template,
             backoff_limit=0,
         )
-        job_id = str(int(uuid4()))
         job = client.V1Job(
             api_version="batch/v1",
             kind="Job",
             metadata=client.V1ObjectMeta(
-                name=f"{job_base_name}{job_id}",
+                name=jobname,
                 namespace=self.settings.namespace,
                 labels={"app": "alchemiscale-synchronouscompute"},
             ),
