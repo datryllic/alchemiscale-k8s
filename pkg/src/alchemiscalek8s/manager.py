@@ -24,7 +24,7 @@ class JobFailureError(Exception):
 class K8SBatchApi:
     """Wrapper around the python kubernetes client."""
 
-    def __init__(self, namespace):
+    def __init__(self, namespace: str):
         config.load_kube_config()
         self.batch_api = client.BatchV1Api()
         self.namespace = namespace
@@ -73,7 +73,7 @@ class K8SBatchApi:
             if job.status.failed:
                 self.delete_job(job)
 
-    def jobs_pending(self):
+    def jobs_pending(self) -> bool:
         """Check for any pending jobs.
 
         Jobs that are waiting for resources or building containers are considered pending.
@@ -90,7 +90,6 @@ class K8SBatchApi:
     def submit_job(self, job):
         """Submit a job to Kubernetes."""
         jobname = job.metadata.name
-        # TODO: handle exceptions
         self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
 
 
@@ -108,14 +107,15 @@ class K8SManager(ComputeManager):
         self.logger.info("Checking health of Jobs")
         self.batch_api.check_job_health()
         self.logger.info(
-            "Checking consistency of ready jobs with alchemiscale compute API"
+            "Checking consistency of ready Jobs with alchemiscale compute API"
         )
         self.batch_api.verify_running_jobs(server_job_names)
-        self.logger.info("Clearing successful jobs")
         self.batch_api.clear_successful_jobs()
+        self.logger.info("Successful Jobs cleared")
         if not self.batch_api.jobs_pending():
             job = self._new_job()
             self.batch_api.submit_job(job)
+            self.logger.info(f"Created Job: {job.metadata.name}")
             return 1
         self.logger.info("Skipping Job creation, pending Jobs exist")
         return 0
