@@ -1,1 +1,114 @@
 # alchemiscalek8s package
+
+## Installation
+
+Dependencies for `alchemiscalek8s` can be installed using `mamba` (or `conda` with its corresponding command). The `alchemiscalek8s` package is currently only installable through its source code.
+
+```shell
+mamba create -f conda-env.yaml
+mamba activate -n alchemiscalek8s
+pip install --no-deps .
+```
+
+## Usage
+
+Three components are required using the Kubernetes manager:
+
+1. A `K8SManagerSettings` configuration yaml file
+2. Job specification configuration yaml file
+3. `ComputeServiceSettings` configuration yaml file
+
+To run the main execution loop, invoke the following:
+
+```shell
+alchemiscalek8s manager start -c manager_config.yaml -s service_config.yaml
+```
+
+Currently, an Kubernetes compute manager will not clear failed Jobs, blocking a new compute manager from running from a previous failure.
+First, diagnose the cause of the job failures.
+Next, run `alchemiscalek8s k8s clearjobs` to clear out any failures.
+Finally, the Kubernetes manager can be rerun.
+
+### `K8SManagerSettings` configuration
+
+```yaml
+name: k8smanager
+logfile: null
+loglevel: INFO
+max_compute_services: 2
+sleep_interval: 1800
+job_spec_path: ./config/job_spec.yaml
+namespace: alchemiscale
+```
+
+The `K8SManageSettings` will be populated from the above configuration.
+The `name` field is used to derive the `ComputeManagerID` which is bound to any created `ComputeService` instances.
+This value should be unique if creating multiple managers, as only one manager with a given name can exist at a given time.
+Note that the compute services created by the Kubernetes manager will have a name with the form `${name}job`.
+
+`logfile` directs log outputs to a path.
+If this value is `null` then log outputs are directed to `stderr`.
+
+`loglevel` defines the minimum logging severity level (see [logging levels](https://docs.python.org/3/library/logging.html#levels)).
+
+`max_compute_services` limits the number of created services to a maximum value.
+
+`sleep_interval` defines the number of seconds until the manager requests a new instruction from the compute API.
+This is currently the maximum rate the manager can create services.
+
+`job_spec_path` defines the path to a yaml file providing container and volume structures used by the Kubernetes API.
+The structure of this file is discussed below.
+
+`namespace` is the Kubernetes namespace to be used by the compute manager.
+
+### Job specification configuration
+
+The definition of containers and volumes to be used for a compute service.
+If compute services were previously managed manually using a `Deployment`, as demonstrated in the `/deployment/` directory, this is the template spec of the compute service configuration.
+The values here determine the version of the alchemiscale-compute image to use, the resources needed by the container, and volumes created created for the pod.
+
+Note that here that the `alchemiscale-compute-settings-yaml` volume comes from `alchemiscale-compute-settings-yaml` secret.
+This secret must exist prior to running the compute manager (see `/compute/secrets.sh`).
+
+```yaml
+containers:
+- name: alchemiscale-synchronous-container
+  image: ghcr.io/openforcefield/alchemiscale-compute:0.1.3-3
+  args: ["compute", "synchronous", "-c", "/mnt/settings/synchronous-compute-settings.yaml"]
+  resources:
+    limits:
+      cpu: 2
+      memory: 12Gi
+      ephemeral-storage: 48Gi
+      nvidia.com/gpu: 1
+    requests:
+      cpu: 2
+      memory: 12Gi
+      ephemeral-storage: 48Gi
+  volumeMounts:
+    - name: alchemiscale-compute-settings-yaml
+      mountPath: "/mnt/settings"
+      readOnly: true
+  env:
+    - name: OPENMM_CPU_THREADS
+      value: "4"
+volumes:
+  - name: alchemiscale-compute-settings-yaml
+    secret:
+      secretName: alchemiscale-compute-settings-yaml
+```
+
+### `ComputeServiceSettings` configuration
+
+This configuration specifies the settings used by a created compute service.
+
+```yaml
+api_url: "http://127.0.0.1:8000"
+identifier: myid
+key: akey
+shared_basedir: "./shared"
+scratch_basedir: "./scratch"
+claim_limit: 2
+```
+
+Importantly, the manager uses the `api_url`, `identifier`, and `key` fields for communication with the alchemiscale compute API.

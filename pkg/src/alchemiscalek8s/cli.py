@@ -35,7 +35,7 @@ def manager_start(config_file, service_config_file):
     manager_settings = ComputeManagerSettings(**yaml.safe_load(config_file))
     service_settings = ComputeServiceSettings(**yaml.safe_load(service_config_file))
     manager = K8SManager(manager_settings, service_settings)
-    raise NotImplementedError
+    manager.start()
 
 
 @cli.group()
