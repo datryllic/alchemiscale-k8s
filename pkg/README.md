@@ -2,11 +2,12 @@
 
 ## Installation
 
-Dependencies for `alchemiscalek8s` can be installed using `mamba` (or `conda` with its corresponding command). The `alchemiscalek8s` package is currently only installable through its source code.
+Dependencies for `alchemiscalek8s` can be installed using `micromamba` (or other variants with their corresponding command).
+The `alchemiscalek8s` package is currently only installable through its source code.
 
 ```shell
-mamba create -f conda-env.yaml
-mamba activate -n alchemiscalek8s
+micromamba create -f conda-env.yaml
+micromamba activate -n alchemiscalek8s
 pip install --no-deps .
 ```
 
@@ -21,7 +22,7 @@ Three components are required using the Kubernetes manager:
 To run the main execution loop, invoke the following:
 
 ```shell
-alchemiscalek8s manager start -c manager_config.yaml -s service_config.yaml
+alchemiscalek8s manager start -c manager-config.yaml -s service-config.yaml
 ```
 
 Currently, an Kubernetes compute manager will not clear failed Jobs, blocking a new compute manager from running from a previous failure.
@@ -73,8 +74,8 @@ This secret must exist prior to running the compute manager (see `/compute/secre
 ```yaml
 containers:
 - name: alchemiscale-synchronous-container
-  image: ghcr.io/openforcefield/alchemiscale-compute:0.1.3-3
-  args: ["compute", "synchronous", "-c", "/mnt/settings/synchronous-compute-settings.yaml"]
+  image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+  args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
   resources:
     limits:
       cpu: 2

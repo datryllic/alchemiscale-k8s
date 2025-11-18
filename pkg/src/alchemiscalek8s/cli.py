@@ -1,9 +1,10 @@
 import click
 import yaml
 
-from alchemiscale.compute.settings import ComputeManagerSettings, ComputeServiceSettings
-from alchemiscale.security.models import CredentialedComputeIdentity
+from alchemiscale.compute.settings import ComputeServiceSettings
+
 from alchemiscalek8s.manager import K8SManager, K8SBatchApi
+from alchemiscalek8s.settings import K8SManagerSettings
 
 
 @click.group()
@@ -16,7 +17,7 @@ def manager():
     pass
 
 
-@cli.command(name="start")
+@manager.command(name="start")
 @click.option(
     "-c",
     "--config-file",
@@ -32,8 +33,11 @@ def manager():
     required=True,
 )
 def manager_start(config_file, service_config_file):
-    manager_settings = ComputeManagerSettings(**yaml.safe_load(config_file))
-    service_settings = ComputeServiceSettings(**yaml.safe_load(service_config_file))
+    manager_settings = K8SManagerSettings(**yaml.safe_load(config_file))
+
+    service_settings_ = yaml.safe_load(service_config_file)
+    service_settings = ComputeServiceSettings(**service_settings_['init'])
+
     manager = K8SManager(manager_settings, service_settings)
     manager.start()
 
