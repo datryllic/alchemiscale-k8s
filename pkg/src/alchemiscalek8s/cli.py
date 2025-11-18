@@ -41,6 +41,29 @@ def manager_start(config_file, service_config_file):
     manager = K8SManager(manager_settings, service_settings)
     manager.start()
 
+@manager.command(name="clearerror")
+@click.option(
+    "-c",
+    "--config-file",
+    "config_file",
+    type=click.File("r"),
+    required=True,
+)
+@click.option(
+    "-s",
+    "--service-config-file",
+    "service_config_file",
+    type=click.File("r"),
+    required=True,
+)
+def manager_clear_error(config_file, service_config_file):
+    manager_settings = K8SManagerSettings(**yaml.safe_load(config_file))
+
+    service_settings_ = yaml.safe_load(service_config_file)
+    service_settings = ComputeServiceSettings(**service_settings_['init'])
+
+    manager = K8SManager(manager_settings, service_settings)
+    manager.clear_error()
 
 @cli.group()
 def k8s():
@@ -48,6 +71,14 @@ def k8s():
 
 
 @k8s.command(name="clearjobs")
-def k8s_clear_jobs():
-    batch_api = K8SBatchApi()
+@click.option(
+    "-n",
+    "--namespace",
+    "namespace",
+    type=str,
+    required=True,
+    default=None,
+)
+def k8s_clear_jobs(namespace):
+    batch_api = K8SBatchApi(namespace)
     batch_api.clear_failed_jobs()
