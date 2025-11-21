@@ -41,7 +41,7 @@ def manager_start(config_file, service_config_file):
     manager = K8SManager(manager_settings, service_settings)
     manager.start()
 
-@manager.command(name="clearerror")
+@manager.command(name="clear-error")
 @click.option(
     "-c",
     "--config-file",
