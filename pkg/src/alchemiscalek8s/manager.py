@@ -130,7 +130,8 @@ class K8SManager(ComputeManager):
         containers = self.job_spec["containers"]
 
         # inject the job name at the command line
-        containers[0]['args'].extend(["-n", jobname])
+        containers[0]['args'].extend(["--name", jobname])
+        containers[0]['args'].extend(["--compute-manager-id", str(self.compute_manager_id)])
 
         template = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(
