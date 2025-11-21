@@ -113,10 +113,26 @@ class K8SManager(ComputeManager):
         self.batch_api.clear_successful_jobs()
         self.logger.info("Successful Jobs cleared")
         if not self.batch_api.jobs_pending():
-            job = self._new_job()
-            self.batch_api.submit_job(job)
-            self.logger.info(f"Created Job: {job.metadata.name}")
-            return 1
+            # determine how many jobs to create
+            jobs_to_create = min(data['num_tasks'],
+                                 self.settings.job_creation_rate,
+                                 self.max_compute_services - len(server_job_names)
+                                )
+
+            # factor in claim limit each compute service is configured with
+            jobs_to_create //= self.service_settings.claim_limit
+
+            # we always want to create at minimum 1 job if we have entered this
+            # method
+            if jobs_to_create == 0:
+                jobs_to_create = 1
+
+            for i in range(jobs_to_create):
+                job = self._new_job()
+                self.batch_api.submit_job(job)
+                self.logger.info(f"Created Job: {job.metadata.name}")
+            return jobs_to_create
+
         self.logger.info("Skipping Job creation, pending Jobs exist")
         return 0
 

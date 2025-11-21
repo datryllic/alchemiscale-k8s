@@ -10,3 +10,6 @@ class K8SManagerSettings(ComputeManagerSettings):
     namespace: str = Field(
         ..., description="Namespace on the target k8s cluster to submit jobs to."
     )
+    job_creation_rate: int = Field(
+        ..., description="Max number of jobs to create per cycle."
+    )
