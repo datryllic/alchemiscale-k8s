@@ -116,7 +116,7 @@ class K8SManager(ComputeManager):
             # determine how many jobs to create
             jobs_to_create = min(data['num_tasks'],
                                  self.settings.job_creation_rate,
-                                 self.max_compute_services - len(server_job_names)
+                                 self.settings.max_compute_services - len(server_job_names)
                                 )
 
             # factor in claim limit each compute service is configured with
