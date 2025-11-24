@@ -40,6 +40,9 @@ max_compute_services: 2
 sleep_interval: 1800
 job_spec_path: ./config/job_spec.yaml
 namespace: alchemiscale
+k8s_max_retries: 5
+k8s_retry_base_seconds: 2.0
+k8s_retry_max_seconds: 60.0
 ```
 
 The `K8SManageSettings` will be populated from the above configuration.

@@ -13,3 +13,23 @@ class K8SManagerSettings(ComputeManagerSettings):
     job_creation_rate: int = Field(
         ..., description="Max number of jobs to create per cycle."
     )
+    k8s_max_retries: int = Field(
+        5,
+        description=(
+            "Maximum number of times to retry a request to k8s. "
+            "In the case k8s is unresponsive an expoenential backoff "
+            "is applied with retries until this number is reached. "
+            "If set to -1, retries will continue indefinitely until success."
+        ),
+    )
+    k8s_retry_base_seconds: float = Field(
+        2.0,
+        description="The base number of seconds to use for exponential backoff. Must be greater than 1.0.",
+    )
+    k8s_retry_max_seconds: float = Field(
+        60.0,
+        description=(
+            "Maximum number of seconds to sleep between retries; "
+            "avoids runaway exponential backoff while allowing for many retries."
+        ),
+    )
