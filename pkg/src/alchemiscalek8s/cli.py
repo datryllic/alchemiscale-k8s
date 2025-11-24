@@ -32,14 +32,19 @@ def manager():
     type=click.File("r"),
     required=True,
 )
-def manager_start(config_file, service_config_file):
+@click.option(
+    "--steal",
+    "steal",
+    is_flag=True,
+)
+def manager_start(config_file, service_config_file, steal):
     manager_settings = K8SManagerSettings(**yaml.safe_load(config_file))
 
     service_settings_ = yaml.safe_load(service_config_file)
     service_settings = ComputeServiceSettings(**service_settings_['init'])
 
     manager = K8SManager(manager_settings, service_settings)
-    manager.start()
+    manager.start(steal=steal)
 
 @manager.command(name="clear-error")
 @click.option(
