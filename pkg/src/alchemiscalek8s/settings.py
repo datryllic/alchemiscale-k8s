@@ -24,12 +24,14 @@ class K8SManagerSettings(ComputeManagerSettings):
     )
     k8s_retry_base_seconds: float = Field(
         2.0,
-        description="The base number of seconds to use for exponential backoff. Must be greater than 1.0.",
+        description=("The base number of seconds to use for exponential backoff to k8s. "
+                     "Must be greater than 1.0.",
+        ),
     )
     k8s_retry_max_seconds: float = Field(
         60.0,
         description=(
-            "Maximum number of seconds to sleep between retries; "
+            "Maximum number of seconds to sleep between retries to k8s; "
             "avoids runaway exponential backoff while allowing for many retries."
         ),
     )
