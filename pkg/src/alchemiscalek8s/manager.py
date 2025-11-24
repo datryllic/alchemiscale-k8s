@@ -52,14 +52,20 @@ class K8SBatchApi:
             propagation_policy="Foreground",
         )
 
-    def verify_running_jobs(self, server_job_names: list[str]):
+    def verify_running_jobs(self, server_job_names: list[str], watchlist: list[str]):
         """Confirm that all jobs that are running are reported by the alchemiscale API."""
+
+        old_watchlist = watchlist[:]
+        watchlist.clear()
+
         for job in self.get_jobs():
             # all ready jobs should be registered
             if job.status.ready and job.metadata.name not in server_job_names:
-                raise JobNotFoundError(
-                    f"{job.metadata.name} not reported by the server, possible registration issues"
-                )
+                if job.metadata.name in old_watchlist:
+                    raise JobNotFoundError(
+                        f"{job.metadata.name} not reported by the server, possible registration issues"
+                    )
+                watchlist.append(job.metadata.name)
 
     def clear_successful_jobs(self):
         """Remove all successful jobs."""
@@ -99,25 +105,26 @@ class K8SManager(ComputeManager):
         self.batch_api = K8SBatchApi(self.settings.namespace)
         with open(self.settings.job_spec_path, "r") as job_spec_file:
             self.job_spec = yaml.safe_load(job_spec_file)
+        self.watchlist = []
 
     def create_compute_services(self, data):
-        compute_service_ids = data["compute_service_ids"]
-        server_job_names = {csid.split("-")[0] for csid in compute_service_ids}
+        server_job_names = {csid.split("-")[0] for csid in data["compute_service_ids"]}
 
         self.logger.info("Checking health of Jobs")
         self.batch_api.check_job_health()
         self.logger.info(
             "Checking consistency of ready Jobs with alchemiscale compute API"
         )
-        self.batch_api.verify_running_jobs(server_job_names)
+        self.batch_api.verify_running_jobs(server_job_names, self.watchlist)
         self.batch_api.clear_successful_jobs()
         self.logger.info("Successful Jobs cleared")
         if not self.batch_api.jobs_pending():
             # determine how many jobs to create
-            jobs_to_create = min(data['num_tasks'],
-                                 self.settings.job_creation_rate,
-                                 self.settings.max_compute_services - len(server_job_names)
-                                )
+            jobs_to_create = min(
+                data["num_tasks"],
+                self.settings.job_creation_rate,
+                self.settings.max_compute_services - len(server_job_names),
+            )
 
             # factor in claim limit each compute service is configured with
             jobs_to_create //= self.service_settings.claim_limit
@@ -146,8 +153,10 @@ class K8SManager(ComputeManager):
         containers = self.job_spec["containers"]
 
         # inject the job name at the command line
-        containers[0]['args'].extend(["--name", jobname])
-        containers[0]['args'].extend(["--compute-manager-id", str(self.compute_manager_id)])
+        containers[0]["args"].extend(["--name", jobname])
+        containers[0]["args"].extend(
+            ["--compute-manager-id", str(self.compute_manager_id)]
+        )
 
         template = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(

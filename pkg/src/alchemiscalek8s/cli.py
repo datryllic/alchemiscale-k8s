@@ -41,10 +41,11 @@ def manager_start(config_file, service_config_file, steal):
     manager_settings = K8SManagerSettings(**yaml.safe_load(config_file))
 
     service_settings_ = yaml.safe_load(service_config_file)
-    service_settings = ComputeServiceSettings(**service_settings_['init'])
+    service_settings = ComputeServiceSettings(**service_settings_["init"])
 
     manager = K8SManager(manager_settings, service_settings)
     manager.start(steal=steal)
+
 
 @manager.command(name="clear-error")
 @click.option(
@@ -65,10 +66,11 @@ def manager_clear_error(config_file, service_config_file):
     manager_settings = K8SManagerSettings(**yaml.safe_load(config_file))
 
     service_settings_ = yaml.safe_load(service_config_file)
-    service_settings = ComputeServiceSettings(**service_settings_['init'])
+    service_settings = ComputeServiceSettings(**service_settings_["init"])
 
     manager = K8SManager(manager_settings, service_settings)
     manager.clear_error()
+
 
 @cli.group()
 def k8s():
