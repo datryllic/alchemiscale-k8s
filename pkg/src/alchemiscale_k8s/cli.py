@@ -3,8 +3,8 @@ import yaml
 
 from alchemiscale.compute.settings import ComputeServiceSettings
 
-from alchemiscalek8s.manager import K8SManager, K8SBatchApi
-from alchemiscalek8s.settings import K8SManagerSettings
+from alchemiscale_k8s.manager import K8SManager, K8SBatchApi
+from alchemiscale_k8s.settings import K8SManagerSettings
 
 
 @click.group()

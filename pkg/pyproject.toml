@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 dynamic = ["version"]
-name = "alchemiscalek8s"
+name = "alchemiscale_k8s"
 authors = [
   {name = "Ian Kenney", email = "ianmichaelkenney@gmail.com"},
 ]
@@ -20,7 +20,7 @@ Repository = "https://github.com/datryllic/alchemiscale-k8s"
 Issues = "https://github.com/datryllic/alchemiscale-k8s/issues"
 
 [project.scripts]
-alchemiscalek8s = "alchemiscalek8s.cli:cli"
+alchemiscale-k8s = "alchemiscale_k8s.cli:cli"
 
 [project.optional-dependencies]
 test = ["pytest"]
