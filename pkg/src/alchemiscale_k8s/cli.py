@@ -77,7 +77,7 @@ def k8s():
     pass
 
 
-@k8s.command(name="clearjobs")
+@k8s.command(name="clear-jobs")
 @click.option(
     "-n",
     "--namespace",
