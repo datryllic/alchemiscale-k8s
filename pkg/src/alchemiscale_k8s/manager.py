@@ -101,7 +101,13 @@ class K8SBatchApi:
         )
 
     def verify_running_jobs(self, server_job_names: list[str], watchlist: list[str]):
-        """Confirm that all jobs that are running are reported by the alchemiscale API."""
+        """Confirm that all jobs that are running are reported by the alchemiscale API.
+
+        We only raise an error if we previously identified a job that is
+        running but not registered due to there being a small time delay
+        between a job coming up and its service registering.
+
+        """
 
         old_watchlist = watchlist[:]
         watchlist.clear()
