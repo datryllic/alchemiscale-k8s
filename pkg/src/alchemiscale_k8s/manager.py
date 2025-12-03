@@ -17,12 +17,13 @@ from kubernetes.utils import create_from_dict
 from kubernetes.client.exceptions import ApiException
 
 
-class JobNotFoundError(Exception):
-    pass
+class JobNotFoundError(Exception): ...
 
 
-class JobFailureError(Exception):
-    pass
+class JobFailureError(Exception): ...
+
+
+class K8SBatchApiException(Exception): ...
 
 
 class K8SBatchApi:
@@ -59,7 +60,7 @@ class K8SBatchApi:
             while True:
                 try:
                     return f(self, *args, **kwargs)
-                except ApiException as e:
+                except K8SBatchApiException as e:
                     if (self.max_retries != -1) and retries >= self.max_retries:
                         raise
                     retries += 1
@@ -94,11 +95,14 @@ class K8SBatchApi:
         This must be a V1Job object.
         """
 
-        self.batch_api.delete_namespaced_job(
-            name=job.metadata.name,
-            namespace=job.metadata.namespace,
-            propagation_policy="Foreground",
-        )
+        try:
+            self.batch_api.delete_namespaced_job(
+                name=job.metadata.name,
+                namespace=job.metadata.namespace,
+                propagation_policy="Foreground",
+            )
+        except Exception as e:
+            raise K8SBatchApiException(e.args)
 
     def verify_running_jobs(self, server_job_names: list[str], watchlist: list[str]):
         """Confirm that all jobs that are running are reported by the alchemiscale API.
@@ -146,13 +150,19 @@ class K8SBatchApi:
     @_retry
     def get_jobs(self) -> list[client.V1Job]:
         """Retrieve all job data under the namespace."""
-        return self.batch_api.list_namespaced_job(namespace=self.namespace).items
+        try:
+            return self.batch_api.list_namespaced_job(namespace=self.namespace).items
+        except Exception as e:
+            raise K8SBatchApiException(e.args)
 
     @_retry
     def submit_job(self, job):
         """Submit a job to Kubernetes."""
         jobname = job.metadata.name
-        self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
+        try:
+            self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
+        except Exception as e:
+            raise K8SBatchApiException(e.args)
 
 
 class K8SManager(ComputeManager):
