@@ -158,7 +158,6 @@ class K8SBatchApi:
     @_retry
     def submit_job(self, job):
         """Submit a job to Kubernetes."""
-        jobname = job.metadata.name
         try:
             self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
         except Exception as e:
