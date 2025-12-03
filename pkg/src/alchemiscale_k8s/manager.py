@@ -232,7 +232,7 @@ class K8SManager(ComputeManager):
 
         template = client.V1PodTemplateSpec(
             metadata=client.V1ObjectMeta(
-                labels={"app": "alchemiscale-synchronouscompute"}
+                labels={"app": "alchemiscale-compute"}
             ),
             spec=client.V1PodSpec(
                 restart_policy="Never", containers=containers, volumes=volumes
@@ -248,7 +248,7 @@ class K8SManager(ComputeManager):
             metadata=client.V1ObjectMeta(
                 name=jobname,
                 namespace=self.settings.namespace,
-                labels={"app": "alchemiscale-synchronouscompute"},
+                labels={"app": "alchemiscale-compute"},
             ),
             spec=spec,
         )
