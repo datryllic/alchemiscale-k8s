@@ -221,8 +221,8 @@ class K8SManager(ComputeManager):
         job_id = str(int(uuid4()))
         jobname = f"{jobname_base}{job_id}"
 
-        volumes = self.job_spec["volumes"]
-        containers = self.job_spec["containers"]
+        volumes = self.job_spec["volumes"].copy()
+        containers = self.job_spec["containers"].copy()
 
         # inject the job name at the command line
         containers[0]["args"].extend(["--name", jobname])
