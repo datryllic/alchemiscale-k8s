@@ -35,13 +35,28 @@ class K8SBatchApi:
         retry_base_seconds: float,
         retry_max_seconds: float
     ):
-        config.load_kube_config()
-        self.batch_api = client.BatchV1Api()
+        self.batch_api = None
         self.namespace = namespace
 
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
+
+    def _create_client(f):
+        @wraps(f)
+        def _wrapper(self, *args, **kwargs):
+
+            config.load_kube_config()
+            self.batch_api = client.BatchV1Api()
+
+            try:
+                res = f(self, *args, **kwargs)
+            finally:
+                self.batch_api.api_client.close()
+
+            return res
+
+        return _wrapper
 
     def _retry(f):
         """Automatically retry with exponential backoff if API service is
@@ -89,6 +104,7 @@ class K8SBatchApi:
                 )
 
     @_retry
+    @_create_client
     def delete_job(self, job: client.V1Job):
         """Delete a given job.
 
@@ -148,6 +164,7 @@ class K8SBatchApi:
         return False
 
     @_retry
+    @_create_client
     def get_jobs(self) -> list[client.V1Job]:
         """Retrieve all job data under the namespace."""
         try:
@@ -156,6 +173,7 @@ class K8SBatchApi:
             raise K8SBatchApiException(e.args)
 
     @_retry
+    @_create_client
     def submit_job(self, job):
         """Submit a job to Kubernetes."""
         try:
