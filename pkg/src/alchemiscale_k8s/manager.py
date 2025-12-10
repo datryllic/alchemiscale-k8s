@@ -31,9 +31,9 @@ class K8SBatchApi:
 
     def __init__(self,
         namespace: str,
-        max_retries: int,
-        retry_base_seconds: float,
-        retry_max_seconds: float
+        max_retries: int = 5,
+        retry_base_seconds: float = 2.0,
+        retry_max_seconds: float = 60.0,
     ):
         self.batch_api = None
         self.namespace = namespace
