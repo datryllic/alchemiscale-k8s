@@ -198,7 +198,7 @@ class K8SManager(ComputeManager):
         self.watchlist = []
 
     def create_compute_services(self, data):
-        server_job_names = {"-".join(csid.split("-")[0:2]) for csid in data["compute_service_ids"]}
+        server_job_names = {csid.split("-")[0] for csid in data["compute_service_ids"]}
 
         self.logger.info("Checking health of Jobs")
         self.batch_api.check_job_health()
@@ -233,11 +233,8 @@ class K8SManager(ComputeManager):
         self.logger.info("Skipping Job creation, pending Jobs exist")
         return 0
 
-    def _new_job(self, jobname_base=None):
-        jobname_base = jobname_base or self.settings.name
-        # cast as int to remove hyphens
-        job_id = uuid4().hex
-        jobname = f"{jobname_base}-{job_id}"
+    def _new_job(self):
+        jobname = f"{self.settings.name}:{uuid4().hex}"
 
         volumes = self.job_spec["volumes"].copy()
         containers = self.job_spec["containers"].copy()
