@@ -234,10 +234,10 @@ class K8SManager(ComputeManager):
         return 0
 
     def _new_job(self, jobname_base=None):
-        jobname_base = jobname_base or f"{self.settings.name}job"
+        jobname_base = jobname_base or self.settings.name
         # cast as int to remove hyphens
-        job_id = str(int(uuid4()))
-        jobname = f"{jobname_base}{job_id}"
+        job_id = uuid4().hex
+        jobname = f"{jobname_base}-{job_id}"
 
         volumes = self.job_spec["volumes"].copy()
         containers = self.job_spec["containers"].copy()
