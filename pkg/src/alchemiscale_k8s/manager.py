@@ -1,6 +1,7 @@
 from uuid import uuid4
 from time import sleep
 from functools import wraps
+from copy import deepcopy
 import time
 import random
 
@@ -236,8 +237,9 @@ class K8SManager(ComputeManager):
     def _new_job(self):
         jobname = f"{self.settings.name}:{uuid4().hex}"
 
-        volumes = self.job_spec["volumes"].copy()
-        containers = self.job_spec["containers"].copy()
+        job_spec = deepcopy(self.job_spec)
+        volumes = job_spec["volumes"]
+        containers = job_spec["containers"]
 
         # inject the job name at the command line
         containers[0]["args"].extend(["--name", jobname])
