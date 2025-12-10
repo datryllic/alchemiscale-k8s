@@ -235,7 +235,7 @@ class K8SManager(ComputeManager):
         return 0
 
     def _new_job(self):
-        jobname = f"{self.settings.name}_{uuid4().hex}"
+        jobname = f"{self.settings.name}.{uuid4().hex}"
 
         job_spec = deepcopy(self.job_spec)
         volumes = job_spec["volumes"]
