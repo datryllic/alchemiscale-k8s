@@ -198,7 +198,7 @@ class K8SManager(ComputeManager):
         self.watchlist = []
 
     def create_compute_services(self, data):
-        server_job_names = {csid.split("-")[0] for csid in data["compute_service_ids"]}
+        server_job_names = {"-".join(csid.split("-")[0:2]) for csid in data["compute_service_ids"]}
 
         self.logger.info("Checking health of Jobs")
         self.batch_api.check_job_health()
