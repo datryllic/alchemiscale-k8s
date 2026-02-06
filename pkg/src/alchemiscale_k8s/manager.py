@@ -47,7 +47,7 @@ class K8SBatchApi:
         @wraps(f)
         def _wrapper(self, *args, **kwargs):
 
-            config.load_kube_config()
+            config.load_config()
             self.batch_api = client.BatchV1Api()
 
             try:
