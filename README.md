@@ -1,11 +1,12 @@
 # alchemiscale-k8s
+
 An `alchemiscale` deployment for kubernetes.
 
 This repo presents a fairly complete set of kubernetes ("k8s") resources that give a usable [`alchemiscale`](https://github.com/openforcefield/alchemiscale) deployment, featuring both server and compute components.
 
 ## deployment instructions
 
-To deploy `alchemiscale` to a k8s cluster:
+To deploy `alchemiscale` to a k8s cluster, from within the `deployment/` directory:
 
 1. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
 
