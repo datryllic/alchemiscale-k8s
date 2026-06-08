@@ -2,29 +2,68 @@ name: alchemiscale-k8s-test
 channels:
   - conda-forge
 
-# alchemiscale itself is installed from git main via pip in CI (--no-deps),
-# until #502 lands in a conda-forge release. These are its runtime
-# dependencies (mirroring the alchemiscale-client/-compute feedstock) plus
-# the kubernetes client and test tooling.
+# Mirrors OpenFreeEnergy/alchemiscale devtools/conda-envs/test.yml (main),
+# plus the kubernetes backend. alchemiscale itself is installed from git main
+# via pip in CI (--no-deps) until #502 lands in a conda-forge release.
 dependencies:
   - pip
-  - pytest
+  - cuda-version >=12
 
-  # alchemiscale runtime deps
-  - requests
-  - click
-  - rich
-  - httpx
-  - nest-asyncio
-  - pydantic-settings
+  # alchemiscale dependencies
+  - gufe =1.7.1
+  - openfe =1.8.0
   - pydantic >2
-  - zstandard
-  - diskcache
+  - pydantic-settings
   - async-lru
+  - nest-asyncio
+  - diskcache
+  - libsqlite<3.49  # newer versions cause diskcache to fail
+  - zstandard
   - stratocaster
-  - gufe >=1.2.0
-  - libsqlite <3.49
-  - openff-interchange >=0.3.18,!=0.4.2
+
+  ## state store
+  - neo4j-python-driver
+  - py2neo
+  - monotonic
+  - docker-py    # for grolt
+
+  # user client printing
+  - rich
+
+  ## object store
+  - boto3        # aws s3
+
+  ## api(s)
+  - fastapi
+  - uvicorn
+  - gunicorn
+  - python-jose
+  - bcrypt
+  - starlette
+  - httpx
+  - cryptography
+
+  # openmm protocols
+  - feflow>=0.1.4
+
+  ## cli
+  - click
 
   # k8s backend
   - python-kubernetes
+
+  # testing
+  - pytest
+  - pytest-xdist
+  - pytest-cov
+  - pytest-timeout
+  - coverage
+  - moto
+
+  # additional pins
+  - openmm=8.2.0
+  - openmmforcefields>=0.14.2
+
+  - pip:
+    - git+https://github.com/datryllic/grolt # neo4j test server deployment
+    - git+https://github.com/OpenFreeEnergy/openfe-benchmarks@v0.1.0
