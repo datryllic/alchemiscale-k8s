@@ -1,0 +1,30 @@
+name: alchemiscale-k8s-test
+channels:
+  - conda-forge
+
+# alchemiscale itself is installed from git main via pip in CI (--no-deps),
+# until #502 lands in a conda-forge release. These are its runtime
+# dependencies (mirroring the alchemiscale-client/-compute feedstock) plus
+# the kubernetes client and test tooling.
+dependencies:
+  - pip
+  - pytest
+
+  # alchemiscale runtime deps
+  - requests
+  - click
+  - rich
+  - httpx
+  - nest-asyncio
+  - pydantic-settings
+  - pydantic >2
+  - zstandard
+  - diskcache
+  - async-lru
+  - stratocaster
+  - gufe >=1.2.0
+  - libsqlite <3.49
+  - openff-interchange >=0.3.18,!=0.4.2
+
+  # k8s backend
+  - python-kubernetes
