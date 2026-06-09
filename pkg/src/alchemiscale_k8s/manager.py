@@ -30,7 +30,8 @@ class K8SBatchApiException(Exception): ...
 class K8SBatchApi:
     """Wrapper around the python kubernetes client."""
 
-    def __init__(self,
+    def __init__(
+        self,
         namespace: str,
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
@@ -91,7 +92,6 @@ class K8SBatchApi:
                     time.sleep(sleep_time)
 
         return _wrapper
-
 
     def check_job_health(self):
         """Check for any failed jobs within the namespace.
@@ -188,17 +188,25 @@ class K8SManager(ComputeManager):
         super().__init__(*args, **kwargs)
 
         self.batch_api = K8SBatchApi(
-                self.settings.namespace,
-                max_retries=self.settings.k8s_max_retries,
-                retry_base_seconds=self.settings.k8s_retry_base_seconds,
-                retry_max_seconds=self.settings.k8s_retry_max_seconds
-                )
+            self.settings.namespace,
+            max_retries=self.settings.k8s_max_retries,
+            retry_base_seconds=self.settings.k8s_retry_base_seconds,
+            retry_max_seconds=self.settings.k8s_retry_max_seconds,
+        )
 
         with open(self.settings.job_spec_path, "r") as job_spec_file:
             self.job_spec = yaml.safe_load(job_spec_file)
         self.watchlist = []
 
-    def create_compute_services(self, data):
+    def create_compute_services(self, data, target):
+        """Submit up to ``target`` k8s Jobs after running our health checks.
+
+        ``target`` is the per-cycle sizing decision computed by
+        :meth:`alchemiscale.compute.manager.ComputeManager._compute_jobs_to_create`,
+        which already accounts for ``num_tasks``, ``max_submit_per_cycle``,
+        remaining capacity, and ``claim_limit``. Sizing math used to live
+        inline here; it now lives once in the upstream base.
+        """
         server_job_names = {csid.split("-")[0] for csid in data["compute_service_ids"]}
 
         self.logger.info("Checking health of Jobs")
@@ -209,30 +217,16 @@ class K8SManager(ComputeManager):
         self.batch_api.verify_running_jobs(server_job_names, self.watchlist)
         self.batch_api.clear_successful_jobs()
         self.logger.info("Successful Jobs cleared")
-        if not self.batch_api.jobs_pending():
-            # determine how many jobs to create
-            jobs_to_create = min(
-                data["num_tasks"],
-                self.settings.job_creation_rate,
-                self.settings.max_compute_services - len(server_job_names),
-            )
 
-            # factor in claim limit each compute service is configured with
-            jobs_to_create //= self.service_settings.claim_limit
+        if self.batch_api.jobs_pending():
+            self.logger.info("Skipping Job creation, pending Jobs exist")
+            return 0
 
-            # we always want to create at minimum 1 job if we have entered this
-            # method
-            if jobs_to_create == 0:
-                jobs_to_create = 1
-
-            for i in range(jobs_to_create):
-                job = self._new_job()
-                self.batch_api.submit_job(job)
-                self.logger.info(f"Created Job: {job.metadata.name}")
-            return jobs_to_create
-
-        self.logger.info("Skipping Job creation, pending Jobs exist")
-        return 0
+        for _ in range(target):
+            job = self._new_job()
+            self.batch_api.submit_job(job)
+            self.logger.info(f"Created Job: {job.metadata.name}")
+        return target
 
     def _new_job(self):
         jobname = f"{self.settings.name}.{uuid4().hex}"
@@ -248,9 +242,7 @@ class K8SManager(ComputeManager):
         )
 
         template = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(
-                labels={"app": "alchemiscale-compute"}
-            ),
+            metadata=client.V1ObjectMeta(labels={"app": "alchemiscale-compute"}),
             spec=client.V1PodSpec(
                 restart_policy="Never", containers=containers, volumes=volumes
             ),
