@@ -1,8 +1,5 @@
 """Tests for K8SManagerSettings.
 
-The most interesting bit is the backward-compat migration of the old
-``job_creation_rate`` field to the upstream ``max_submit_per_cycle`` on
-``alchemiscale.compute.settings.ComputeManagerSettings``.
 """
 
 import warnings
