@@ -118,6 +118,8 @@ key: akey
 shared_basedir: "./shared"
 scratch_basedir: "./scratch"
 claim_limit: 2
+max_tasks: null   # max Tasks to execute before exiting; null = no limit
+max_time: null    # max seconds to run before exiting; null = no limit
 ```
 
 Importantly, the manager uses the `api_url`, `identifier`, and `key` fields for communication with the alchemiscale compute API.
