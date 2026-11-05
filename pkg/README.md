@@ -27,8 +27,20 @@ alchemiscale-k8s manager start -c manager-config.yaml -s service-config.yaml
 
 Currently, a Kubernetes compute manager will not clear failed Jobs, blocking a new compute manager from running from a previous failure.
 First, diagnose the cause of the job failures.
-Next, run `alchemiscale-k8s k8s clear-jobs` to clear out any failures.
+Next, run `alchemiscale-k8s k8s clear-jobs --namespace <namespace> --manager-name <name>` to clear out that manager's failed Jobs.
+Without `--manager-name`, failed Jobs created by any `alchemiscale-k8s` manager in the namespace are cleared.
 Finally, the Kubernetes compute manager can be rerun.
+
+### Job ownership
+
+Each Job (and its pods) created by a manager is labeled `alchemiscale.org/compute-manager: <name>`, where `<name>` is the manager's `name` setting.
+A manager only inspects, waits on, and deletes Jobs carrying its own label, so it can share a namespace with other workloads and with other managers.
+`alchemiscale-k8s k8s clear-jobs` never touches Jobs without the `alchemiscale.org/compute-manager` label.
+Because the name is used as a label value, it must be a valid Kubernetes label value: at most 63 characters, consisting of alphanumerics, `-`, `_` and `.`, and starting and ending with an alphanumeric.
+
+**Upgrading from v0.2.x:** Jobs created by earlier versions lack the `alchemiscale.org/compute-manager` label, so an upgraded manager will not see them: they won't count as pending, won't be cleared when they succeed, and their failures won't stop the manager.
+Before upgrading, stop the manager and delete its old Jobs, e.g. with `kubectl delete jobs -n <namespace> -l app=alchemiscale-compute`.
+Note this selector matches Jobs from every manager in the namespace, so stop them all first, or delete the Jobs by name instead.
 
 ### `K8SManagerSettings` configuration
 
