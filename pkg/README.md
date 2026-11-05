@@ -25,10 +25,9 @@ To run the main execution loop, invoke the following:
 alchemiscale-k8s manager start -c manager-config.yaml -s service-config.yaml
 ```
 
-Currently, a Kubernetes compute manager will not clear failed Jobs, blocking a new compute manager from running from a previous failure.
-First, diagnose the cause of the job failures.
-Next, run `alchemiscale-k8s k8s clear-jobs` to clear out any failures.
-Finally, the Kubernetes compute manager can be rerun.
+Failed Jobs (e.g. from evicted, preempted or OOM-killed pods) are logged with their failure reason and deleted each cycle, and the manager keeps running.
+If failed Jobs are found in more than `max_consecutive_failed_cycles` consecutive cycles, the manager stops with a `JobFailureError`, since this usually indicates a bad image, job spec or compute service settings.
+In that case, diagnose the cause of the job failures, run `alchemiscale-k8s k8s clear-jobs` to clear out any remaining failed Jobs, and rerun the Kubernetes compute manager.
 
 ### `K8SManagerSettings` configuration
 
@@ -44,6 +43,7 @@ namespace: alchemiscale
 k8s_max_retries: 5
 k8s_retry_base_seconds: 2.0
 k8s_retry_max_seconds: 60.0
+max_consecutive_failed_cycles: 5
 ```
 
 The `K8SManagerSettings` will be populated from the above configuration.
@@ -67,6 +67,10 @@ The structure of this file is discussed below.
 `namespace` is the Kubernetes namespace to be used by the compute manager.
 
 `k8s_max_retries`, `k8s_retry_base_seconds`, and `k8s_retry_max_seconds` adjust the behavior of exponential backoff for requests to the Kubernetes API.
+
+`max_consecutive_failed_cycles` sets how many consecutive cycles may find failed Jobs before the manager stops with a `JobFailureError`; any cycle without failed Jobs resets the count.
+Set it to `0` to stop on the first failed Job, or to `null` to never stop on failed Jobs.
+Reading pod termination reasons for the logs requires `get`/`list` on `pods` in the namespace; without it, only the Job-level reason is logged.
 
 ### Job specification configuration
 

@@ -35,6 +35,19 @@ class K8SManagerSettings(ComputeManagerSettings):
             "avoids runaway exponential backoff while allowing for many retries."
         ),
     )
+    max_consecutive_failed_cycles: int | None = Field(
+        5,
+        ge=0,
+        description=(
+            "Failed Jobs (e.g. evicted, preempted or OOM-killed pods) are logged "
+            "and deleted each cycle without stopping the manager. If failed Jobs "
+            "are found in more than this many consecutive cycles, the manager "
+            "raises a JobFailureError and stops, since persistent failures "
+            "usually indicate a bad image, job spec or compute service settings. "
+            "Any cycle with no failed Jobs resets the count. Set to 0 to stop on "
+            "the first failed Job; set to null to never stop on failed Jobs."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

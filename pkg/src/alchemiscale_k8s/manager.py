@@ -4,6 +4,7 @@ from functools import wraps
 from copy import deepcopy
 import time
 import random
+import logging
 
 import yaml
 
@@ -25,6 +26,9 @@ class JobFailureError(Exception): ...
 
 
 class K8SBatchApiException(Exception): ...
+
+
+_logger = logging.getLogger(__name__)
 
 
 class K8SBatchApi:
@@ -93,16 +97,75 @@ class K8SBatchApi:
 
         return _wrapper
 
-    def check_job_health(self):
-        """Check for any failed jobs within the namespace.
+    def describe_job_failure(self, job: client.V1Job) -> str:
+        """Return a best-effort, human-readable reason for a failed Job.
 
-        If a job has any failed pods, this method raises a JobFailureError.
+        Combines the reason/message of the Job's ``Failed`` condition (e.g.
+        ``BackoffLimitExceeded``, ``DeadlineExceeded``) with the termination
+        reasons of its pods (e.g. ``Evicted``, ``OOMKilled``). Never raises;
+        parts that cannot be determined are omitted.
         """
-        for job in self.get_jobs():
-            if job.status.failed:
-                raise JobFailureError(
-                    f"Job `{job.metadata.name}` failed, check its status and remove it before restarting the manager.",
-                )
+        parts = []
+        try:
+            for cond in job.status.conditions or []:
+                if cond.type == "Failed" and cond.status == "True":
+                    parts.append(
+                        f"{cond.reason}: {cond.message}"
+                        if cond.message
+                        else str(cond.reason)
+                    )
+        except Exception:
+            pass
+
+        pod_reasons = self._get_pod_termination_reasons(job.metadata.name)
+        if pod_reasons:
+            parts.append("pods: " + "; ".join(pod_reasons))
+
+        return " | ".join(parts) if parts else "unknown reason"
+
+    def _get_pod_termination_reasons(self, job_name: str) -> list[str]:
+        """Best-effort lookup of termination reasons for a Job's pods.
+
+        Requires ``get``/``list`` on ``pods`` in the namespace. Any error
+        (missing RBAC, pods already gone, API unreachable) yields an empty
+        list rather than raising, and no retries are attempted.
+        """
+        reasons = []
+        core_api = None
+        try:
+            config.load_config()
+            core_api = client.CoreV1Api()
+            pods = core_api.list_namespaced_pod(
+                namespace=self.namespace, label_selector=f"job-name={job_name}"
+            ).items
+            for pod in pods:
+                status = pod.status
+                pod_reasons = []
+                if status.reason:
+                    # pod-level reasons, e.g. `Evicted`
+                    pod_reasons.append(
+                        f"{status.reason}: {status.message}"
+                        if status.message
+                        else status.reason
+                    )
+                for cs in status.container_statuses or []:
+                    terminated = cs.state.terminated if cs.state else None
+                    if terminated is not None and terminated.reason:
+                        pod_reasons.append(
+                            f"container `{cs.name}` {terminated.reason} "
+                            f"(exit code {terminated.exit_code})"
+                        )
+                if pod_reasons:
+                    reasons.append(f"{pod.metadata.name}: {', '.join(pod_reasons)}")
+        except Exception as e:
+            _logger.debug(f"Could not read pods for Job `{job_name}`: {e!r}")
+        finally:
+            if core_api is not None:
+                try:
+                    core_api.api_client.close()
+                except Exception:
+                    pass
+        return reasons
 
     @_retry
     @_create_client
@@ -148,11 +211,23 @@ class K8SBatchApi:
             if job.status.succeeded:
                 self.delete_job(job)
 
-    def clear_failed_jobs(self):
-        """Remove all failed jobs."""
+    def clear_failed_jobs(self, logger: logging.Logger | None = None) -> list[str]:
+        """Log and remove all failed jobs.
+
+        Each failed Job is logged at ERROR level with a best-effort failure
+        reason (see :meth:`describe_job_failure`) before it is deleted.
+
+        Returns the names of the failed Jobs that were removed.
+        """
+        logger = logger or _logger
+        failed = []
         for job in self.get_jobs():
             if job.status.failed:
+                reason = self.describe_job_failure(job)
+                logger.error(f"Job `{job.metadata.name}` failed ({reason}); deleting")
                 self.delete_job(job)
+                failed.append(job.metadata.name)
+        return failed
 
     def jobs_pending(self) -> bool:
         """Check for any pending jobs.
@@ -197,6 +272,7 @@ class K8SManager(ComputeManager):
         with open(self.settings.job_spec_path, "r") as job_spec_file:
             self.job_spec = yaml.safe_load(job_spec_file)
         self.watchlist = []
+        self.consecutive_failed_cycles = 0
 
     def create_compute_services(self, data, target):
         """Submit up to ``target`` k8s Jobs after running our health checks.
@@ -210,7 +286,7 @@ class K8SManager(ComputeManager):
         server_job_names = {csid.split("-")[0] for csid in data["compute_service_ids"]}
 
         self.logger.info("Checking health of Jobs")
-        self.batch_api.check_job_health()
+        self.handle_failed_jobs()
         self.logger.info(
             "Checking consistency of ready Jobs with alchemiscale compute API"
         )
@@ -227,6 +303,40 @@ class K8SManager(ComputeManager):
             self.batch_api.submit_job(job)
             self.logger.info(f"Created Job: {job.metadata.name}")
         return target
+
+    def handle_failed_jobs(self) -> list[str]:
+        """Log and delete failed Jobs, raising only if failures persist.
+
+        Failed Jobs are expected on shared clusters (evictions, preemption,
+        OOM kills), so each one is logged and deleted rather than halting the
+        manager. If failed Jobs are found in more than
+        ``settings.max_consecutive_failed_cycles`` consecutive checks, a
+        :class:`JobFailureError` is raised so that a systematic problem (bad
+        image, bad settings) still fails loudly.
+
+        Returns the names of the failed Jobs deleted in this check.
+        """
+        failed = self.batch_api.clear_failed_jobs(logger=self.logger)
+
+        if not failed:
+            self.consecutive_failed_cycles = 0
+            return failed
+
+        self.consecutive_failed_cycles += 1
+        limit = self.settings.max_consecutive_failed_cycles
+        self.logger.warning(
+            f"Deleted {len(failed)} failed Job(s); failed Jobs found in "
+            f"{self.consecutive_failed_cycles} consecutive cycle(s)"
+            + (f" (limit {limit})" if limit is not None else "")
+        )
+        if limit is not None and self.consecutive_failed_cycles > limit:
+            raise JobFailureError(
+                f"Failed Jobs found in {self.consecutive_failed_cycles} consecutive "
+                f"cycles, exceeding max_consecutive_failed_cycles={limit}; "
+                f"most recent: {', '.join(failed)}. Check the job spec, image "
+                f"and compute service settings."
+            )
+        return failed
 
     def _new_job(self):
         jobname = f"{self.settings.name}.{uuid4().hex}"
