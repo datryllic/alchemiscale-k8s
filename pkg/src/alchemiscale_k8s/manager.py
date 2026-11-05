@@ -40,9 +40,11 @@ class K8SBatchApi:
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
         retry_max_seconds: float = 60.0,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
     ):
         self.batch_api = None
         self.namespace = namespace
+        self.logger = logger if logger is not None else _logger
 
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
@@ -158,7 +160,7 @@ class K8SBatchApi:
                 if pod_reasons:
                     reasons.append(f"{pod.metadata.name}: {', '.join(pod_reasons)}")
         except Exception as e:
-            _logger.debug(f"Could not read pods for Job `{job_name}`: {e!r}")
+            self.logger.debug(f"Could not read pods for Job `{job_name}`: {e!r}")
         finally:
             if core_api is not None:
                 try:
@@ -211,7 +213,7 @@ class K8SBatchApi:
             if job.status.succeeded:
                 self.delete_job(job)
 
-    def clear_failed_jobs(self, logger: logging.Logger | None = None) -> list[str]:
+    def clear_failed_jobs(self) -> list[str]:
         """Log and remove all failed jobs.
 
         Each failed Job is logged at ERROR level with a best-effort failure
@@ -219,12 +221,11 @@ class K8SBatchApi:
 
         Returns the names of the failed Jobs that were removed.
         """
-        logger = logger or _logger
         failed = []
         for job in self.get_jobs():
             if job.status.failed:
                 reason = self.describe_job_failure(job)
-                logger.error(f"Job `{job.metadata.name}` failed ({reason}); deleting")
+                self.logger.error(f"Job `{job.metadata.name}` failed ({reason}); deleting")
                 self.delete_job(job)
                 failed.append(job.metadata.name)
         return failed
@@ -267,6 +268,7 @@ class K8SManager(ComputeManager):
             max_retries=self.settings.k8s_max_retries,
             retry_base_seconds=self.settings.k8s_retry_base_seconds,
             retry_max_seconds=self.settings.k8s_retry_max_seconds,
+            logger=self.logger,
         )
 
         with open(self.settings.job_spec_path, "r") as job_spec_file:
@@ -316,7 +318,7 @@ class K8SManager(ComputeManager):
 
         Returns the names of the failed Jobs deleted in this check.
         """
-        failed = self.batch_api.clear_failed_jobs(logger=self.logger)
+        failed = self.batch_api.clear_failed_jobs()
 
         if not failed:
             self.consecutive_failed_cycles = 0

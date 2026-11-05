@@ -227,6 +227,46 @@ def test_pod_lookup_config_error_is_swallowed(batch_api, cluster, monkeypatch):
     assert batch_api.describe_job_failure(job) == "unknown reason"
 
 
+def test_given_logger_receives_all_messages(cluster, caplog):
+    """A logger passed to K8SBatchApi gets the pod-lookup DEBUG message as
+    well as the failed-Job ERROR, so nothing goes to the module logger."""
+    logger = logging.getLogger("test_k8s_batch_api")
+    batch_api = K8SBatchApi(NAMESPACE, logger=logger)
+    cluster.pod_error = RuntimeError("API unreachable")
+    cluster.add_job("bad", failed=1)
+
+    with caplog.at_level(logging.DEBUG):
+        batch_api.clear_failed_jobs()
+
+    records = [r for r in caplog.records if "bad" in r.getMessage()]
+    assert {r.name for r in records} == {"test_k8s_batch_api"}
+    assert {r.levelno for r in records} == {logging.DEBUG, logging.ERROR}
+
+
+def test_manager_shares_logger_with_batch_api(tmp_path, monkeypatch):
+    """K8SManager hands its own logger to the K8SBatchApi it constructs."""
+    spec = tmp_path / "job-spec.yaml"
+    spec.write_text("containers: []\nvolumes: []\n")
+
+    def fake_compute_manager_init(self, settings):
+        self.settings = settings
+        self.logger = logging.getLogger("test_k8s_manager_shared")
+
+    monkeypatch.setattr(
+        manager_module.ComputeManager, "__init__", fake_compute_manager_init
+    )
+    settings = K8SManagerSettings(
+        name="testmgr",
+        logfile=None,
+        max_compute_services=1,
+        job_spec_path=spec,
+        namespace=NAMESPACE,
+    )
+    mgr = K8SManager(settings)
+
+    assert mgr.batch_api.logger is mgr.logger
+
+
 # K8SManager
 
 

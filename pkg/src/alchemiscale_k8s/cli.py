@@ -1,3 +1,5 @@
+import logging
+
 import click
 import yaml
 
@@ -97,5 +99,8 @@ def k8s():
     default=None,
 )
 def k8s_clear_jobs(namespace):
+    logging.basicConfig(
+        level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s"
+    )
     batch_api = K8SBatchApi(namespace)
     batch_api.clear_failed_jobs()
