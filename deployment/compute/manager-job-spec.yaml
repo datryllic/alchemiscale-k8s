@@ -1,0 +1,34 @@
+# Container and volume definitions for the compute service Jobs created by
+# the alchemiscale-k8s compute manager.
+# Deployed in a ConfigMap together with manager-settings.yaml:
+# `bash compute/manager-configmap.sh`.
+#
+# The compute service settings come from the same
+# `alchemiscale-compute-settings-yaml` Secret that the manager itself mounts
+# (see secrets.sh). The manager appends `--name` and `--compute-manager-id`
+# to the first container's args.
+containers:
+- name: alchemiscale-synchronous-container
+  image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+  args: ["compute", "synchronous", "-c", "/mnt/settings/synchronous-compute-settings.yaml"]
+  resources:
+    limits:
+      cpu: 2
+      memory: 12Gi
+      ephemeral-storage: 48Gi
+      nvidia.com/gpu: 1
+    requests:
+      cpu: 2
+      memory: 12Gi
+      ephemeral-storage: 48Gi
+  volumeMounts:
+    - name: alchemiscale-compute-settings-yaml
+      mountPath: "/mnt/settings"
+      readOnly: true
+  env:
+    - name: OPENMM_CPU_THREADS
+      value: "4"
+volumes:
+  - name: alchemiscale-compute-settings-yaml
+    secret:
+      secretName: alchemiscale-compute-settings-yaml
