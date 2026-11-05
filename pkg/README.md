@@ -102,8 +102,9 @@ containers:
       mountPath: "/mnt/settings"
       readOnly: true
   env:
+    # keep in step with the container CPU limit to avoid CFS throttling
     - name: OPENMM_CPU_THREADS
-      value: "4"
+      value: "2"
 volumes:
   - name: alchemiscale-compute-settings-yaml
     secret:
