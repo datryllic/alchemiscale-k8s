@@ -51,6 +51,10 @@ The `name` field is used to derive the `ComputeManagerID` which is bound to any 
 This value should be unique if creating multiple managers, as only one manager with a given name can exist at a given time.
 Note that the compute services created by the Kubernetes manager will have a name with the form `${name}job`.
 
+`name` must start with a lowercase letter, contain only lowercase letters, digits, and periods (`.`), with no leading, trailing, or consecutive periods (e.g. `nrp.omsf`), and be at most 30 characters long.
+The manager names each Kubernetes Job `{name}.{32-character hex uuid}`, so these rules keep Job names valid for Kubernetes (lowercase DNS-1123 subdomains, at most 63 characters because the Job name is copied into the `job-name` pod label) and for alchemiscale compute IDs (which disallow `-`).
+Invalid names are rejected when the settings are loaded.
+
 `logfile` directs log outputs to a path.
 If this value is `null` then log outputs are directed to `stderr`.
 
