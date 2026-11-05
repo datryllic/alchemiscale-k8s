@@ -2,11 +2,15 @@
 
 """
 
+import re
 import warnings
+from uuid import uuid4
 
 import pytest
+from alchemiscale.storage.models import ComputeManagerID, ComputeServiceID
+from pydantic import ValidationError
 
-from alchemiscale_k8s.settings import K8SManagerSettings
+from alchemiscale_k8s.settings import MAX_MANAGER_NAME_LENGTH, K8SManagerSettings
 
 
 def _base_kwargs(**overrides):
@@ -66,3 +70,65 @@ def test_job_creation_rate_no_longer_a_field():
     fields = set(K8SManagerSettings.model_fields)
     assert "job_creation_rate" not in fields
     assert "max_submit_per_cycle" in fields  # inherited from ComputeManagerSettings
+
+
+# --- name validation (issue #14) ---
+
+# Kubernetes DNS-1123 subdomain regex, as used to validate Job names.
+_DNS1123_SUBDOMAIN = re.compile(
+    r"[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*"
+)
+
+
+def test_max_manager_name_length_is_30():
+    assert MAX_MANAGER_NAME_LENGTH == 30
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "testmgr",
+        "nrp.omsf",
+        "a",
+        "mgr1",
+        "a.1.b2",
+        "a" * MAX_MANAGER_NAME_LENGTH,
+    ],
+)
+def test_valid_names_accepted(name):
+    settings = K8SManagerSettings(**_base_kwargs(name=name))
+    assert settings.name == name
+
+    # names that pass must yield Job names Kubernetes and alchemiscale accept
+    jobname = f"{name}.{uuid4().hex}"
+    assert len(jobname) <= 63
+    assert _DNS1123_SUBDOMAIN.fullmatch(jobname)
+    ComputeManagerID.new_from_name(name)
+    ComputeServiceID.new_from_name(jobname)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "test_mgr",  # underscore: rejected by Kubernetes
+        "test:mgr",  # colon: rejected by Kubernetes
+        "test-mgr",  # hyphen: rejected by alchemiscale compute IDs
+        "TestMgr",  # uppercase: rejected by Kubernetes; not silently lowercased
+        "1mgr",  # leading digit: rejected by alchemiscale compute IDs
+        ".mgr",
+        "mgr.",
+        "a..b",
+        "test mgr",
+        "",
+    ],
+)
+def test_invalid_names_rejected(name):
+    with pytest.raises(ValidationError, match="lowercase"):
+        K8SManagerSettings(**_base_kwargs(name=name))
+
+
+def test_name_too_long_rejected():
+    name = "a" * (MAX_MANAGER_NAME_LENGTH + 1)
+    with pytest.raises(ValidationError, match="job-name") as excinfo:
+        K8SManagerSettings(**_base_kwargs(name=name))
+    assert "at most 30" in str(excinfo.value)
