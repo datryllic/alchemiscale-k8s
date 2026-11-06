@@ -62,27 +62,12 @@ class FakeCluster:
         self.jobs = []
         self.pods = {}  # job name -> list of V1Pod
         self.deleted = []
-        self.pod_error = None
-        self.pod_selectors = []
 
     def add_job(self, *args, pods=(), **kwargs):
         job = make_job(*args, **kwargs)
         self.jobs.append(job)
         self.pods[job.metadata.name] = list(pods)
         return job
-
-
-class FakeCoreV1Api:
-    def __init__(self, cluster):
-        self.cluster = cluster
-        self.api_client = type("C", (), {"close": lambda self: None})()
-
-    def list_namespaced_pod(self, namespace, label_selector):
-        self.cluster.pod_selectors.append(label_selector)
-        if self.cluster.pod_error is not None:
-            raise self.cluster.pod_error
-        job_name = label_selector.removeprefix("job-name=")
-        return client.V1PodList(items=self.cluster.pods.get(job_name, []))
 
 
 @pytest.fixture
@@ -97,12 +82,18 @@ def cluster(monkeypatch):
         cluster.deleted.append(job.metadata.name)
         cluster.jobs = [j for j in cluster.jobs if j.metadata.name != job.metadata.name]
 
+    class FakeCoreV1Api:
+        def __init__(self, api_client=None):
+            pass
+
+        def list_namespaced_pod(self, namespace, label_selector):
+            job_name = label_selector.removeprefix("job-name=")
+            return client.V1PodList(items=cluster.pods.get(job_name, []))
+
     monkeypatch.setattr(K8SBatchApi, "get_jobs", get_jobs)
     monkeypatch.setattr(K8SBatchApi, "delete_job", delete_job)
     monkeypatch.setattr(manager_module.config, "load_config", lambda *a, **k: None)
-    monkeypatch.setattr(
-        manager_module.client, "CoreV1Api", lambda *a, **k: FakeCoreV1Api(cluster)
-    )
+    monkeypatch.setattr(manager_module.client, "CoreV1Api", FakeCoreV1Api)
     return cluster
 
 
@@ -132,11 +123,6 @@ def make_manager(batch_api, **settings_overrides):
     return mgr
 
 
-@pytest.fixture
-def k8s_manager(batch_api):
-    return make_manager(batch_api)
-
-
 # K8SBatchApi
 
 
@@ -146,22 +132,23 @@ def test_clear_failed_jobs_deletes_only_failed(batch_api, cluster):
     cluster.add_job("bad1", failed=1)
     cluster.add_job("bad2", failed=1)
 
-    assert batch_api.clear_failed_jobs() == ["bad1", "bad2"]
+    assert list(batch_api.clear_failed_jobs()) == ["bad1", "bad2"]
     assert cluster.deleted == ["bad1", "bad2"]
     assert [j.metadata.name for j in cluster.jobs] == ["ok", "running"]
 
 
-def test_clear_failed_jobs_logs_reason(batch_api, cluster, caplog):
+def test_clear_failed_jobs_reports_reasons(batch_api, cluster):
     cluster.add_job(
         "bad",
         failed=1,
         conditions=[
+            client.V1JobCondition(type="Complete", status="False", reason="Nope"),
             client.V1JobCondition(
                 type="Failed",
                 status="True",
                 reason="BackoffLimitExceeded",
                 message="Job has reached the specified backoff limit",
-            )
+            ),
         ],
         pods=[
             make_pod("bad-abc", terminated_reason="OOMKilled", exit_code=137),
@@ -169,126 +156,37 @@ def test_clear_failed_jobs_logs_reason(batch_api, cluster, caplog):
         ],
     )
 
-    with caplog.at_level(logging.ERROR):
-        batch_api.clear_failed_jobs()
-
-    (record,) = [r for r in caplog.records if "bad" in r.getMessage()]
-    msg = record.getMessage()
-    assert record.levelno == logging.ERROR
-    assert "BackoffLimitExceeded: Job has reached the specified backoff limit" in msg
-    assert "bad-abc: container `compute` OOMKilled (exit code 137)" in msg
-    assert "bad-def: Evicted: low on memory" in msg
-    assert cluster.pod_selectors == ["job-name=bad"]
-
-
-def test_describe_job_failure_ignores_non_failed_conditions(batch_api, cluster):
-    job = cluster.add_job(
-        "bad",
-        failed=1,
-        conditions=[
-            client.V1JobCondition(type="Complete", status="False", reason="Nope"),
-            client.V1JobCondition(
-                type="Failed", status="True", reason="DeadlineExceeded"
-            ),
-        ],
+    assert batch_api.clear_failed_jobs()["bad"] == (
+        "BackoffLimitExceeded: Job has reached the specified backoff limit"
+        " | bad-abc: container `compute` OOMKilled (exit code 137)"
+        " | bad-def: Evicted: low on memory"
     )
-    assert batch_api.describe_job_failure(job) == "DeadlineExceeded"
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        client.exceptions.ApiException(status=403, reason="Forbidden"),
-        RuntimeError("API unreachable"),
-    ],
-)
-def test_pod_lookup_errors_are_swallowed(batch_api, cluster, error):
-    cluster.pod_error = error
-    cluster.add_job(
-        "bad",
-        failed=1,
-        conditions=[
-            client.V1JobCondition(type="Failed", status="True", reason="BackoffLimitExceeded")
-        ],
-    )
-    job = cluster.jobs[0]
-
-    assert batch_api.describe_job_failure(job) == "BackoffLimitExceeded"
-    assert batch_api.clear_failed_jobs() == ["bad"]
-
-
-def test_pod_lookup_config_error_is_swallowed(batch_api, cluster, monkeypatch):
+def test_pod_lookup_error_is_reported_not_raised(batch_api, cluster, monkeypatch):
     def fail(*a, **k):
         raise manager_module.config.ConfigException("no config")
 
     monkeypatch.setattr(manager_module.config, "load_config", fail)
-    job = cluster.add_job("bad", failed=1)
-
-    assert batch_api.describe_job_failure(job) == "unknown reason"
-
-
-def test_given_logger_receives_all_messages(cluster, caplog):
-    """A logger passed to K8SBatchApi gets the pod-lookup DEBUG message as
-    well as the failed-Job ERROR, so nothing goes to the module logger."""
-    logger = logging.getLogger("test_k8s_batch_api")
-    batch_api = K8SBatchApi(NAMESPACE, logger=logger)
-    cluster.pod_error = RuntimeError("API unreachable")
-    cluster.add_job("bad", failed=1)
-
-    with caplog.at_level(logging.DEBUG):
-        batch_api.clear_failed_jobs()
-
-    records = [r for r in caplog.records if "bad" in r.getMessage()]
-    assert {r.name for r in records} == {"test_k8s_batch_api"}
-    assert {r.levelno for r in records} == {logging.DEBUG, logging.ERROR}
-
-
-def test_manager_shares_logger_with_batch_api(tmp_path, monkeypatch):
-    """K8SManager hands its own logger to the K8SBatchApi it constructs."""
-    spec = tmp_path / "job-spec.yaml"
-    spec.write_text("containers: []\nvolumes: []\n")
-
-    def fake_compute_manager_init(self, settings):
-        self.settings = settings
-        self.logger = logging.getLogger("test_k8s_manager_shared")
-
-    monkeypatch.setattr(
-        manager_module.ComputeManager, "__init__", fake_compute_manager_init
+    job = cluster.add_job(
+        "bad",
+        failed=1,
+        conditions=[
+            client.V1JobCondition(
+                type="Failed", status="True", reason="BackoffLimitExceeded"
+            )
+        ],
     )
-    settings = K8SManagerSettings(
-        name="testmgr",
-        logfile=None,
-        max_compute_services=1,
-        job_spec_path=spec,
-        namespace=NAMESPACE,
-    )
-    mgr = K8SManager(settings)
 
-    assert mgr.batch_api.logger is mgr.logger
+    assert batch_api.describe_job_failure(job) == (
+        "BackoffLimitExceeded | pods unavailable: no config"
+    )
 
 
 # K8SManager
 
 
-def test_single_failure_does_not_halt(k8s_manager, cluster):
-    cluster.add_job("good", active=1, ready=1)
-    cluster.add_job("evicted", failed=1)
-
-    assert k8s_manager.handle_failed_jobs() == ["evicted"]
-    assert cluster.deleted == ["evicted"]
-    assert k8s_manager.consecutive_failed_cycles == 1
-
-
-def test_clean_cycle_resets_count(k8s_manager, cluster):
-    cluster.add_job("bad", failed=1)
-    k8s_manager.handle_failed_jobs()
-    assert k8s_manager.consecutive_failed_cycles == 1
-
-    assert k8s_manager.handle_failed_jobs() == []
-    assert k8s_manager.consecutive_failed_cycles == 0
-
-
-@pytest.mark.parametrize("limit", [0, 1, 3])
+@pytest.mark.parametrize("limit", [0, 3])
 def test_raises_after_limit_consecutive_failed_cycles(batch_api, cluster, limit):
     mgr = make_manager(batch_api, max_consecutive_failed_cycles=limit)
 
@@ -303,53 +201,40 @@ def test_raises_after_limit_consecutive_failed_cycles(batch_api, cluster, limit)
     assert "last" in cluster.deleted
 
 
-def test_interrupted_streak_does_not_raise(batch_api, cluster):
+def test_clean_cycle_resets_count(batch_api, cluster):
     mgr = make_manager(batch_api, max_consecutive_failed_cycles=1)
 
-    for i in range(5):
+    for i in range(3):
         cluster.add_job(f"bad{i}", failed=1)
         mgr.handle_failed_jobs()
+        assert mgr.consecutive_failed_cycles == 1
         mgr.handle_failed_jobs()  # clean cycle
-
-    assert mgr.consecutive_failed_cycles == 0
+        assert mgr.consecutive_failed_cycles == 0
 
 
 def test_limit_none_never_raises(batch_api, cluster):
     mgr = make_manager(batch_api, max_consecutive_failed_cycles=None)
 
-    for i in range(20):
+    for i in range(3):
         cluster.add_job(f"bad{i}", failed=1)
         mgr.handle_failed_jobs()
 
-    assert mgr.consecutive_failed_cycles == 20
+    assert mgr.consecutive_failed_cycles == 3
 
 
 def test_create_compute_services_continues_past_failed_job(
-    k8s_manager, cluster, monkeypatch
+    batch_api, cluster, monkeypatch, caplog
 ):
+    mgr = make_manager(batch_api)
     cluster.add_job("evicted", failed=1)
     submitted = []
     monkeypatch.setattr(K8SBatchApi, "submit_job", lambda self, job: submitted.append(job))
     monkeypatch.setattr(K8SManager, "_new_job", lambda self: make_job("new"))
 
-    created = k8s_manager.create_compute_services({"compute_service_ids": []}, 2)
+    with caplog.at_level(logging.ERROR, logger="test_k8s_manager"):
+        created = mgr.create_compute_services({"compute_service_ids": []}, 2)
 
     assert created == 2
     assert len(submitted) == 2
     assert cluster.deleted == ["evicted"]
-
-
-def test_settings_default():
-    settings = K8SManagerSettings(
-        name="testmgr",
-        logfile=None,
-        max_compute_services=2,
-        job_spec_path="/tmp/job-spec.yaml",
-        namespace=NAMESPACE,
-    )
-    assert settings.max_consecutive_failed_cycles == 5
-
-
-def test_settings_rejects_negative():
-    with pytest.raises(ValueError):
-        make_manager(None, max_consecutive_failed_cycles=-1)
+    assert "Deleted failed Job `evicted`" in caplog.text

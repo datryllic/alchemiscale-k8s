@@ -4,7 +4,6 @@ from functools import wraps
 from copy import deepcopy
 import time
 import random
-import logging
 
 import yaml
 
@@ -28,9 +27,6 @@ class JobFailureError(Exception): ...
 class K8SBatchApiException(Exception): ...
 
 
-_logger = logging.getLogger(__name__)
-
-
 class K8SBatchApi:
     """Wrapper around the python kubernetes client."""
 
@@ -40,11 +36,9 @@ class K8SBatchApi:
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
         retry_max_seconds: float = 60.0,
-        logger: logging.Logger | logging.LoggerAdapter | None = None,
     ):
         self.batch_api = None
         self.namespace = namespace
-        self.logger = logger if logger is not None else _logger
 
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
@@ -100,74 +94,42 @@ class K8SBatchApi:
         return _wrapper
 
     def describe_job_failure(self, job: client.V1Job) -> str:
-        """Return a best-effort, human-readable reason for a failed Job.
+        """Best-effort reason for a failed Job: its ``Failed`` condition plus
+        its pods' termination reasons. Never raises."""
 
-        Combines the reason/message of the Job's ``Failed`` condition (e.g.
-        ``BackoffLimitExceeded``, ``DeadlineExceeded``) with the termination
-        reasons of its pods (e.g. ``Evicted``, ``OOMKilled``). Never raises;
-        parts that cannot be determined are omitted.
-        """
-        parts = []
-        try:
-            for cond in job.status.conditions or []:
-                if cond.type == "Failed" and cond.status == "True":
-                    parts.append(
-                        f"{cond.reason}: {cond.message}"
-                        if cond.message
-                        else str(cond.reason)
-                    )
-        except Exception:
-            pass
+        def fmt(reason, message):
+            return f"{reason}: {message}" if message else reason
 
-        pod_reasons = self._get_pod_termination_reasons(job.metadata.name)
-        if pod_reasons:
-            parts.append("pods: " + "; ".join(pod_reasons))
-
-        return " | ".join(parts) if parts else "unknown reason"
-
-    def _get_pod_termination_reasons(self, job_name: str) -> list[str]:
-        """Best-effort lookup of termination reasons for a Job's pods.
-
-        Requires ``get``/``list`` on ``pods`` in the namespace. Any error
-        (missing RBAC, pods already gone, API unreachable) yields an empty
-        list rather than raising, and no retries are attempted.
-        """
-        reasons = []
-        core_api = None
+        parts = [
+            fmt(c.reason, c.message)
+            for c in job.status.conditions or []
+            if c.type == "Failed" and c.status == "True"
+        ]
         try:
             config.load_config()
-            core_api = client.CoreV1Api()
-            pods = core_api.list_namespaced_pod(
-                namespace=self.namespace, label_selector=f"job-name={job_name}"
-            ).items
-            for pod in pods:
-                status = pod.status
-                pod_reasons = []
-                if status.reason:
-                    # pod-level reasons, e.g. `Evicted`
-                    pod_reasons.append(
-                        f"{status.reason}: {status.message}"
-                        if status.message
-                        else status.reason
-                    )
-                for cs in status.container_statuses or []:
-                    terminated = cs.state.terminated if cs.state else None
-                    if terminated is not None and terminated.reason:
-                        pod_reasons.append(
-                            f"container `{cs.name}` {terminated.reason} "
-                            f"(exit code {terminated.exit_code})"
-                        )
-                if pod_reasons:
-                    reasons.append(f"{pod.metadata.name}: {', '.join(pod_reasons)}")
+            with client.ApiClient() as api:
+                pods = client.CoreV1Api(api).list_namespaced_pod(
+                    self.namespace, label_selector=f"job-name={job.metadata.name}"
+                ).items
         except Exception as e:
-            self.logger.debug(f"Could not read pods for Job `{job_name}`: {e!r}")
-        finally:
-            if core_api is not None:
-                try:
-                    core_api.api_client.close()
-                except Exception:
-                    pass
-        return reasons
+            detail = f"{e.status} {e.reason}" if isinstance(e, ApiException) else e
+            parts.append(f"pods unavailable: {detail}")
+            pods = []
+        for pod in pods:
+            reasons = (
+                [fmt(pod.status.reason, pod.status.message)]
+                if pod.status.reason
+                else []
+            )
+            reasons += [
+                f"container `{cs.name}` {cs.state.terminated.reason} "
+                f"(exit code {cs.state.terminated.exit_code})"
+                for cs in pod.status.container_statuses or []
+                if cs.state and cs.state.terminated and cs.state.terminated.reason
+            ]
+            if reasons:
+                parts.append(f"{pod.metadata.name}: {', '.join(reasons)}")
+        return " | ".join(parts) or "unknown reason"
 
     @_retry
     @_create_client
@@ -213,21 +175,13 @@ class K8SBatchApi:
             if job.status.succeeded:
                 self.delete_job(job)
 
-    def clear_failed_jobs(self) -> list[str]:
-        """Log and remove all failed jobs.
-
-        Each failed Job is logged at ERROR level with a best-effort failure
-        reason (see :meth:`describe_job_failure`) before it is deleted.
-
-        Returns the names of the failed Jobs that were removed.
-        """
-        failed = []
+    def clear_failed_jobs(self) -> dict[str, str]:
+        """Remove all failed jobs, returning ``{name: failure reason}``."""
+        failed = {}
         for job in self.get_jobs():
             if job.status.failed:
-                reason = self.describe_job_failure(job)
-                self.logger.error(f"Job `{job.metadata.name}` failed ({reason}); deleting")
+                failed[job.metadata.name] = self.describe_job_failure(job)
                 self.delete_job(job)
-                failed.append(job.metadata.name)
         return failed
 
     def jobs_pending(self) -> bool:
@@ -268,7 +222,6 @@ class K8SManager(ComputeManager):
             max_retries=self.settings.k8s_max_retries,
             retry_base_seconds=self.settings.k8s_retry_base_seconds,
             retry_max_seconds=self.settings.k8s_retry_max_seconds,
-            logger=self.logger,
         )
 
         with open(self.settings.job_spec_path, "r") as job_spec_file:
@@ -306,31 +259,18 @@ class K8SManager(ComputeManager):
             self.logger.info(f"Created Job: {job.metadata.name}")
         return target
 
-    def handle_failed_jobs(self) -> list[str]:
-        """Log and delete failed Jobs, raising only if failures persist.
-
-        Failed Jobs are expected on shared clusters (evictions, preemption,
-        OOM kills), so each one is logged and deleted rather than halting the
-        manager. If failed Jobs are found in more than
-        ``settings.max_consecutive_failed_cycles`` consecutive checks, a
-        :class:`JobFailureError` is raised so that a systematic problem (bad
-        image, bad settings) still fails loudly.
-
-        Returns the names of the failed Jobs deleted in this check.
-        """
+    def handle_failed_jobs(self) -> dict[str, str]:
+        """Log and delete failed Jobs, raising :class:`JobFailureError` if
+        they are found in more than ``max_consecutive_failed_cycles``
+        consecutive checks. Returns ``{name: failure reason}``."""
         failed = self.batch_api.clear_failed_jobs()
+        for name, reason in failed.items():
+            self.logger.error(f"Deleted failed Job `{name}`: {reason}")
 
-        if not failed:
-            self.consecutive_failed_cycles = 0
-            return failed
-
-        self.consecutive_failed_cycles += 1
-        limit = self.settings.max_consecutive_failed_cycles
-        self.logger.warning(
-            f"Deleted {len(failed)} failed Job(s); failed Jobs found in "
-            f"{self.consecutive_failed_cycles} consecutive cycle(s)"
-            + (f" (limit {limit})" if limit is not None else "")
+        self.consecutive_failed_cycles = (
+            self.consecutive_failed_cycles + 1 if failed else 0
         )
+        limit = self.settings.max_consecutive_failed_cycles
         if limit is not None and self.consecutive_failed_cycles > limit:
             raise JobFailureError(
                 f"Failed Jobs found in {self.consecutive_failed_cycles} consecutive "

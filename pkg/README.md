@@ -25,8 +25,9 @@ To run the main execution loop, invoke the following:
 alchemiscale-k8s manager start -c manager-config.yaml -s service-config.yaml
 ```
 
-Failed Jobs (e.g. from evicted, preempted or OOM-killed pods) are logged with their failure reason and deleted each cycle, and the manager keeps running.
-If failed Jobs are found in more than `max_consecutive_failed_cycles` consecutive cycles, the manager stops with a `JobFailureError`, since this usually indicates a bad image, job spec or compute service settings.
+Failed Jobs (e.g. from evicted, preempted or OOM-killed pods) are logged with their failure reason and deleted, and the manager keeps running.
+This check runs only in cycles where the manager creates compute services, i.e. when there are tasks to run and capacity to spare.
+If failed Jobs are found in more than `max_consecutive_failed_cycles` consecutive such cycles, the manager stops with a `JobFailureError`, since this usually indicates a bad image, job spec or compute service settings.
 In that case, diagnose the cause of the job failures, run `alchemiscale-k8s k8s clear-jobs` to clear out any remaining failed Jobs, and rerun the Kubernetes compute manager.
 
 ### `K8SManagerSettings` configuration
@@ -68,9 +69,9 @@ The structure of this file is discussed below.
 
 `k8s_max_retries`, `k8s_retry_base_seconds`, and `k8s_retry_max_seconds` adjust the behavior of exponential backoff for requests to the Kubernetes API.
 
-`max_consecutive_failed_cycles` sets how many consecutive cycles may find failed Jobs before the manager stops with a `JobFailureError`; any cycle without failed Jobs resets the count.
+`max_consecutive_failed_cycles` sets how many consecutive cycles may find failed Jobs before the manager stops with a `JobFailureError`; only cycles in which the manager creates compute services count, and any such cycle without failed Jobs resets the count.
 Set it to `0` to stop on the first failed Job, or to `null` to never stop on failed Jobs.
-Reading pod termination reasons for the logs requires `get`/`list` on `pods` in the namespace; without it, only the Job-level reason is logged.
+Reading pod termination reasons for the logs requires `list` on `pods` in the namespace; without it, the logged reason notes that pods were unavailable.
 
 ### Job specification configuration
 
