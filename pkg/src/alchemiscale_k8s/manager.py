@@ -38,6 +38,7 @@ class K8SBatchApi:
         retry_max_seconds: float = 60.0,
     ):
         self.batch_api = None
+        self.core_api = None
         self.namespace = namespace
 
         self.max_retries = max_retries
@@ -45,18 +46,16 @@ class K8SBatchApi:
         self.retry_max_seconds = retry_max_seconds
 
     def _create_client(f):
+        """Load the k8s config and open an API client for the duration of the
+        call, exposed as ``self.batch_api`` and ``self.core_api``."""
+
         @wraps(f)
         def _wrapper(self, *args, **kwargs):
-
             config.load_config()
-            self.batch_api = client.BatchV1Api()
-
-            try:
-                res = f(self, *args, **kwargs)
-            finally:
-                self.batch_api.api_client.close()
-
-            return res
+            with client.ApiClient() as api_client:
+                self.batch_api = client.BatchV1Api(api_client)
+                self.core_api = client.CoreV1Api(api_client)
+                return f(self, *args, **kwargs)
 
         return _wrapper
 
@@ -106,11 +105,7 @@ class K8SBatchApi:
             if c.type == "Failed" and c.status == "True"
         ]
         try:
-            config.load_config()
-            with client.ApiClient() as api:
-                pods = client.CoreV1Api(api).list_namespaced_pod(
-                    self.namespace, label_selector=f"job-name={job.metadata.name}"
-                ).items
+            pods = self._list_job_pods(job.metadata.name)
         except Exception as e:
             detail = f"{e.status} {e.reason}" if isinstance(e, ApiException) else e
             parts.append(f"pods unavailable: {detail}")
@@ -130,6 +125,13 @@ class K8SBatchApi:
             if reasons:
                 parts.append(f"{pod.metadata.name}: {', '.join(reasons)}")
         return " | ".join(parts) or "unknown reason"
+
+    @_create_client
+    def _list_job_pods(self, job_name: str) -> list[client.V1Pod]:
+        """List a Job's pods. Not retried: only used for diagnostics."""
+        return self.core_api.list_namespaced_pod(
+            self.namespace, label_selector=f"job-name={job_name}"
+        ).items
 
     @_retry
     @_create_client
