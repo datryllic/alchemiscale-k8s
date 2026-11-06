@@ -98,4 +98,5 @@ def k8s():
 )
 def k8s_clear_jobs(namespace):
     batch_api = K8SBatchApi(namespace)
-    batch_api.clear_failed_jobs()
+    for name, reason in batch_api.clear_failed_jobs().items():
+        click.echo(f"Deleted failed Job `{name}`: {reason}")
