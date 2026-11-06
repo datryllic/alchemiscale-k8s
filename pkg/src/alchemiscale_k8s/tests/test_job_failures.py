@@ -4,9 +4,12 @@ No cluster is needed: the Kubernetes client is replaced with in-memory fakes.
 """
 
 import logging
+from unittest import mock
 
 import pytest
 from kubernetes import client
+
+from alchemiscale.compute.settings import ComputeServiceSettings
 
 from alchemiscale_k8s import manager as manager_module
 from alchemiscale_k8s.manager import JobFailureError, K8SBatchApi, K8SManager
@@ -102,25 +105,44 @@ def batch_api(cluster):
     return K8SBatchApi(NAMESPACE)
 
 
-def make_manager(batch_api, **settings_overrides):
-    """Build a K8SManager without calling ComputeManager.__init__ (no network)."""
-    settings = K8SManagerSettings(
-        **{
-            "name": "testmgr",
-            "logfile": None,
-            "max_compute_services": 10,
-            "job_spec_path": "/tmp/job-spec.yaml",
-            "namespace": NAMESPACE,
-            **settings_overrides,
-        }
+@pytest.fixture
+def make_manager(cluster, tmp_path, monkeypatch):
+    """Build a K8SManager through its real __init__, with the alchemiscale
+    API client replaced so nothing touches the network or the disk cache."""
+    monkeypatch.setattr(
+        "alchemiscale.compute.manager.AlchemiscaleComputeManagerClient", mock.Mock()
     )
-    mgr = K8SManager.__new__(K8SManager)
-    mgr.settings = settings
-    mgr.batch_api = batch_api
-    mgr.watchlist = []
-    mgr.consecutive_failed_cycles = 0
-    mgr.logger = logging.getLogger("test_k8s_manager")
-    return mgr
+    job_spec = tmp_path / "job-spec.yaml"
+    job_spec.write_text(
+        "containers:\n- name: compute\n  image: img\n  args: []\nvolumes: []\n"
+    )
+    service_settings = ComputeServiceSettings(
+        api_url="http://localhost",
+        identifier="test",
+        key="test",
+        name="test",
+        shared_basedir=tmp_path / "shared",
+        scratch_basedir=tmp_path / "scratch",
+    )
+    upstream_logger = logging.getLogger("AlchemiscaleComputeManager")
+    handlers = list(upstream_logger.handlers)
+
+    def _make(**settings_overrides):
+        settings = K8SManagerSettings(
+            **{
+                "name": "testmgr",
+                "logfile": None,
+                "max_compute_services": 10,
+                "job_spec_path": job_spec,
+                "namespace": NAMESPACE,
+                **settings_overrides,
+            }
+        )
+        return K8SManager(settings, service_settings.model_copy())
+
+    yield _make
+    # upstream __init__ adds a StreamHandler on every construction
+    upstream_logger.handlers = handlers
 
 
 # K8SBatchApi
@@ -187,8 +209,8 @@ def test_pod_lookup_error_is_reported_not_raised(batch_api, cluster, monkeypatch
 
 
 @pytest.mark.parametrize("limit", [0, 3])
-def test_raises_after_limit_consecutive_failed_cycles(batch_api, cluster, limit):
-    mgr = make_manager(batch_api, max_consecutive_failed_cycles=limit)
+def test_raises_after_limit_consecutive_failed_cycles(make_manager, cluster, limit):
+    mgr = make_manager(max_consecutive_failed_cycles=limit)
 
     for i in range(limit):
         cluster.add_job(f"bad{i}", failed=1)
@@ -201,8 +223,8 @@ def test_raises_after_limit_consecutive_failed_cycles(batch_api, cluster, limit)
     assert "last" in cluster.deleted
 
 
-def test_clean_cycle_resets_count(batch_api, cluster):
-    mgr = make_manager(batch_api, max_consecutive_failed_cycles=1)
+def test_clean_cycle_resets_count(make_manager, cluster):
+    mgr = make_manager(max_consecutive_failed_cycles=1)
 
     for i in range(3):
         cluster.add_job(f"bad{i}", failed=1)
@@ -212,8 +234,8 @@ def test_clean_cycle_resets_count(batch_api, cluster):
         assert mgr.consecutive_failed_cycles == 0
 
 
-def test_limit_none_never_raises(batch_api, cluster):
-    mgr = make_manager(batch_api, max_consecutive_failed_cycles=None)
+def test_limit_none_never_raises(make_manager, cluster):
+    mgr = make_manager(max_consecutive_failed_cycles=None)
 
     for i in range(3):
         cluster.add_job(f"bad{i}", failed=1)
@@ -223,15 +245,15 @@ def test_limit_none_never_raises(batch_api, cluster):
 
 
 def test_create_compute_services_continues_past_failed_job(
-    batch_api, cluster, monkeypatch, caplog
+    make_manager, cluster, monkeypatch, caplog
 ):
-    mgr = make_manager(batch_api)
+    mgr = make_manager()
     cluster.add_job("evicted", failed=1)
     submitted = []
     monkeypatch.setattr(K8SBatchApi, "submit_job", lambda self, job: submitted.append(job))
     monkeypatch.setattr(K8SManager, "_new_job", lambda self: make_job("new"))
 
-    with caplog.at_level(logging.ERROR, logger="test_k8s_manager"):
+    with caplog.at_level(logging.ERROR):
         created = mgr.create_compute_services({"compute_service_ids": []}, 2)
 
     assert created == 2
