@@ -1,0 +1,70 @@
+# Example Deployment running the alchemiscale-k8s compute manager in-cluster.
+#
+# Prerequisites, from within the `deployment/compute/` directory:
+#   1. RBAC:                        kubectl apply -f manager-rbac.yaml
+#   2. compute settings Secret:     bash secrets.sh
+#   3. manager settings + Job spec: bash manager-configmap.sh
+#
+# The compute service settings Secret is shared: the manager uses its
+# `api_url` and `key` to talk to the alchemiscale compute API, and the Jobs it
+# creates mount the same Secret (see manager-job-spec.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alchemiscale-k8s-manager
+  namespace: alchemiscale
+  labels:
+    app: alchemiscale-k8s-manager
+spec:
+  # Only one manager may run under a given `name`. A single replica with the
+  # Recreate strategy stops the old pod before starting a new one, so two
+  # managers never overlap.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: alchemiscale-k8s-manager
+  template:
+    metadata:
+      labels:
+        app: alchemiscale-k8s-manager
+    spec:
+      serviceAccountName: alchemiscale-k8s-manager
+      # On SIGTERM the manager stops its loop and deregisters from the
+      # compute API; leave time for that request's retries with backoff.
+      terminationGracePeriodSeconds: 120
+      containers:
+      - name: alchemiscale-k8s-manager-container
+        # Any image with the `alchemiscale-k8s` package installed (see
+        # pkg/README.md); replace with your own build.
+        image: ghcr.io/datryllic/alchemiscale-k8s:latest
+        command: ["alchemiscale-k8s"]
+        # If a previous manager pod was killed without deregistering (e.g.
+        # OOMKilled or lost node), add "--steal" to take over its
+        # registration; this is safe here because Recreate never runs two
+        # manager pods at once.
+        args: ["manager", "start",
+               "-c", "/mnt/manager/manager-settings.yaml",
+               "-s", "/mnt/settings/synchronous-compute-settings.yaml"]
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+          - name: alchemiscale-k8s-manager-config
+            mountPath: "/mnt/manager"
+            readOnly: true
+          - name: alchemiscale-compute-settings-yaml
+            mountPath: "/mnt/settings"
+            readOnly: true
+      volumes:
+        - name: alchemiscale-k8s-manager-config
+          configMap:
+            name: alchemiscale-k8s-manager-config
+        - name: alchemiscale-compute-settings-yaml
+          secret:
+            secretName: alchemiscale-compute-settings-yaml

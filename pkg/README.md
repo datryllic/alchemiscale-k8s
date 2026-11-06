@@ -52,6 +52,10 @@ The `name` field is used to derive the `ComputeManagerID` which is bound to any 
 This value should be unique if creating multiple managers, as only one manager with a given name can exist at a given time.
 Note that the compute services created by the Kubernetes manager will have a name with the form `${name}job`.
 
+`name` must start with a lowercase letter, contain only lowercase letters, digits, and periods (`.`), with no leading, trailing, or consecutive periods (e.g. `nrp.omsf`), and be at most 30 characters long.
+The manager names each Kubernetes Job `{name}.{32-character hex uuid}`, so these rules keep Job names valid for Kubernetes (lowercase DNS-1123 subdomains, at most 63 characters because the Job name is copied into the `job-name` pod label) and for alchemiscale compute IDs (which disallow `-`).
+Invalid names are rejected when the settings are loaded.
+
 `logfile` directs log outputs to a path.
 If this value is `null` then log outputs are directed to `stderr`.
 
@@ -103,8 +107,9 @@ containers:
       mountPath: "/mnt/settings"
       readOnly: true
   env:
+    # keep in step with the container CPU limit to avoid CFS throttling
     - name: OPENMM_CPU_THREADS
-      value: "4"
+      value: "2"
 volumes:
   - name: alchemiscale-compute-settings-yaml
     secret:
@@ -129,3 +134,61 @@ max_time: null    # max seconds to run before exiting; null = no limit
 
 Importantly, the manager uses the `api_url`, `identifier`, and `key` fields for communication with the alchemiscale compute API.
 The manager will disregard `identifier` here, instead replacing it with an `identifier` generated from its own `name` field.
+
+## Deploying as a container in Kubernetes
+
+The manager can run as a pod inside the cluster it manages.
+It then authenticates to the Kubernetes API with the pod's ServiceAccount.
+Example manifests are in [`/deployment/compute/`](../deployment/compute/).
+They assume the `alchemiscale` namespace; run the commands below from that directory.
+
+### Create a service account
+
+The namespace's `default` ServiceAccount cannot manage Jobs, so the manager needs its own.
+[`manager-rbac.yaml`](../deployment/compute/manager-rbac.yaml) defines:
+
+- a `ServiceAccount` named `alchemiscale-k8s-manager`;
+- a `Role` granting `get`, `list`, `watch`, `create` and `delete` on `batch` `jobs`, plus `get` and `list` on `pods` (read-only, for inspecting the pods of failed Jobs);
+- a `RoleBinding` granting that `Role` to the `ServiceAccount`.
+
+```shell
+kubectl apply -f manager-rbac.yaml
+```
+
+If the manager creates Jobs in a namespace other than `alchemiscale`, change the `namespace` of all three resources to match the `namespace` field of the manager settings.
+
+### Create Kubernetes Deployment
+
+The manager pod needs the three configuration files described above:
+
+1. `K8SManagerSettings`: [`manager-settings.yaml`](../deployment/compute/manager-settings.yaml).
+   Its `job_spec_path` points at the Job spec mounted in the pod, `/mnt/manager/manager-job-spec.yaml`.
+2. Job specification: [`manager-job-spec.yaml`](../deployment/compute/manager-job-spec.yaml).
+3. `ComputeServiceSettings`: [`synchronous-compute-settings.yaml`](../deployment/compute/synchronous-compute-settings.yaml).
+   This file contains the compute identity's key, so it is stored in the `alchemiscale-compute-settings-yaml` Secret.
+   The manager and the Jobs it creates both mount this Secret.
+
+Create the Secret, then a ConfigMap holding the manager settings and Job spec:
+
+```shell
+bash secrets.sh
+bash manager-configmap.sh
+```
+
+Re-run these scripts after editing any of the files, then restart the manager with `kubectl -n alchemiscale rollout restart deployment/alchemiscale-k8s-manager`.
+
+Then deploy the manager:
+
+```shell
+kubectl apply -f manager-deployment.yaml
+```
+
+[`manager-deployment.yaml`](../deployment/compute/manager-deployment.yaml) runs `alchemiscale-k8s manager start -c /mnt/manager/manager-settings.yaml -s /mnt/settings/synchronous-compute-settings.yaml` as the `alchemiscale-k8s-manager` ServiceAccount.
+Set its `image` to an image with `alchemiscale-k8s` installed.
+Other details:
+
+- It runs a single replica with `strategy: Recreate`, so the old manager pod stops before a new one starts and two managers with the same `name` never overlap.
+- The manager handles `SIGTERM` by stopping its loop and deregistering from the compute API.
+  `terminationGracePeriodSeconds: 120` gives that request time to retry.
+- If a manager pod is killed without deregistering (for example, it is OOMKilled), its replacement cannot register under the same `name`.
+  Add `--steal` to the container's `args` to take over the stale registration.
