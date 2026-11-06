@@ -7,6 +7,7 @@ import logging
 from unittest import mock
 
 import pytest
+import yaml
 from kubernetes import client
 
 from alchemiscale.compute.settings import ComputeServiceSettings
@@ -114,7 +115,12 @@ def make_manager(cluster, tmp_path, monkeypatch):
     )
     job_spec = tmp_path / "job-spec.yaml"
     job_spec.write_text(
-        "containers:\n- name: compute\n  image: img\n  args: []\nvolumes: []\n"
+        yaml.safe_dump(
+            {
+                "containers": [{"name": "compute", "image": "img", "args": []}],
+                "volumes": [],
+            }
+        )
     )
     service_settings = ComputeServiceSettings(
         api_url="http://localhost",
