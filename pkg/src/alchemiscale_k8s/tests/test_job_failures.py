@@ -86,7 +86,7 @@ def cluster(monkeypatch):
         def __init__(self, api_client=None):
             pass
 
-        def list_namespaced_pod(self, namespace, label_selector):
+        def list_namespaced_pod(self, namespace, label_selector: str):
             job_name = label_selector.removeprefix("job-name=")
             return client.V1PodList(items=cluster.pods.get(job_name, []))
 
