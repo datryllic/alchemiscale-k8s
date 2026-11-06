@@ -5,6 +5,7 @@
 import warnings
 
 import pytest
+from pydantic import ValidationError
 
 from alchemiscale_k8s.settings import K8SManagerSettings
 
@@ -66,3 +67,8 @@ def test_job_creation_rate_no_longer_a_field():
     fields = set(K8SManagerSettings.model_fields)
     assert "job_creation_rate" not in fields
     assert "max_submit_per_cycle" in fields  # inherited from ComputeManagerSettings
+
+
+def test_max_consecutive_failed_cycles_rejects_negative():
+    with pytest.raises(ValidationError):
+        K8SManagerSettings(**_base_kwargs(max_consecutive_failed_cycles=-1))

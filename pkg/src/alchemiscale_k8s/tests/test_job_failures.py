@@ -8,11 +8,14 @@ from unittest import mock
 
 import pytest
 import yaml
+from click.testing import CliRunner
 from kubernetes import client
+from kubernetes.client.exceptions import ApiException
 
 from alchemiscale.compute.settings import ComputeServiceSettings
 
 from alchemiscale_k8s import manager as manager_module
+from alchemiscale_k8s.cli import cli
 from alchemiscale_k8s.manager import JobFailureError, K8SBatchApi, K8SManager
 from alchemiscale_k8s.settings import K8SManagerSettings
 
@@ -66,6 +69,7 @@ class FakeCluster:
         self.jobs = []
         self.pods = {}  # job name -> list of V1Pod
         self.deleted = []
+        self.submitted = []
 
     def add_job(self, *args, pods=(), **kwargs):
         job = make_job(*args, **kwargs)
@@ -85,6 +89,10 @@ def cluster(monkeypatch):
     def delete_job(self, job):
         cluster.deleted.append(job.metadata.name)
         cluster.jobs = [j for j in cluster.jobs if j.metadata.name != job.metadata.name]
+        cluster.pods.pop(job.metadata.name, None)  # Foreground propagation
+
+    def submit_job(self, job):
+        cluster.submitted.append(job)
 
     class FakeCoreV1Api:
         def __init__(self, api_client=None):
@@ -96,6 +104,7 @@ def cluster(monkeypatch):
 
     monkeypatch.setattr(K8SBatchApi, "get_jobs", get_jobs)
     monkeypatch.setattr(K8SBatchApi, "delete_job", delete_job)
+    monkeypatch.setattr(K8SBatchApi, "submit_job", submit_job)
     monkeypatch.setattr(manager_module.config, "load_config", lambda *a, **k: None)
     monkeypatch.setattr(manager_module.client, "CoreV1Api", FakeCoreV1Api)
     return cluster
@@ -103,7 +112,8 @@ def cluster(monkeypatch):
 
 @pytest.fixture
 def batch_api(cluster):
-    return K8SBatchApi(NAMESPACE)
+    # no retries, so a call the fakes miss fails fast instead of backing off
+    return K8SBatchApi(NAMESPACE, max_retries=0)
 
 
 @pytest.fixture
@@ -130,8 +140,11 @@ def make_manager(cluster, tmp_path, monkeypatch):
         shared_basedir=tmp_path / "shared",
         scratch_basedir=tmp_path / "scratch",
     )
+    # upstream __init__ adds a StreamHandler and sets the level on every
+    # construction; monkeypatch restores both afterwards
     upstream_logger = logging.getLogger("AlchemiscaleComputeManager")
-    handlers = list(upstream_logger.handlers)
+    monkeypatch.setattr(upstream_logger, "handlers", list(upstream_logger.handlers))
+    monkeypatch.setattr(upstream_logger, "level", upstream_logger.level)
 
     def _make(**settings_overrides):
         settings = K8SManagerSettings(
@@ -141,14 +154,13 @@ def make_manager(cluster, tmp_path, monkeypatch):
                 "max_compute_services": 10,
                 "job_spec_path": job_spec,
                 "namespace": NAMESPACE,
+                "k8s_max_retries": 0,
                 **settings_overrides,
             }
         )
-        return K8SManager(settings, service_settings.model_copy())
+        return K8SManager(settings, service_settings)
 
-    yield _make
-    # upstream __init__ adds a StreamHandler on every construction
-    upstream_logger.handlers = handlers
+    return _make
 
 
 # K8SBatchApi
@@ -160,7 +172,10 @@ def test_clear_failed_jobs_deletes_only_failed(batch_api, cluster):
     cluster.add_job("bad1", failed=1)
     cluster.add_job("bad2", failed=1)
 
-    assert list(batch_api.clear_failed_jobs()) == ["bad1", "bad2"]
+    assert batch_api.clear_failed_jobs() == {
+        "bad1": "unknown reason",
+        "bad2": "unknown reason",
+    }
     assert cluster.deleted == ["bad1", "bad2"]
     assert [j.metadata.name for j in cluster.jobs] == ["ok", "running"]
 
@@ -181,6 +196,7 @@ def test_clear_failed_jobs_reports_reasons(batch_api, cluster):
         pods=[
             make_pod("bad-abc", terminated_reason="OOMKilled", exit_code=137),
             make_pod("bad-def", reason="Evicted", message="low on memory"),
+            make_pod("bad-ghi"),  # nothing to report: omitted
         ],
     )
 
@@ -191,11 +207,20 @@ def test_clear_failed_jobs_reports_reasons(batch_api, cluster):
     )
 
 
-def test_pod_lookup_error_is_reported_not_raised(batch_api, cluster, monkeypatch):
+@pytest.mark.parametrize(
+    "error, detail",
+    [
+        (manager_module.config.ConfigException("no config"), "no config"),
+        (ApiException(status=403, reason="Forbidden"), "403 Forbidden"),
+    ],
+)
+def test_pod_lookup_error_is_reported_not_raised(
+    batch_api, cluster, monkeypatch, error, detail
+):
     def fail(*a, **k):
-        raise manager_module.config.ConfigException("no config")
+        raise error
 
-    monkeypatch.setattr(manager_module.config, "load_config", fail)
+    monkeypatch.setattr(K8SBatchApi, "_list_job_pods", fail)
     job = cluster.add_job(
         "bad",
         failed=1,
@@ -207,7 +232,7 @@ def test_pod_lookup_error_is_reported_not_raised(batch_api, cluster, monkeypatch
     )
 
     assert batch_api.describe_job_failure(job) == (
-        "BackoffLimitExceeded | pods unavailable: no config"
+        f"BackoffLimitExceeded | pods unavailable: {detail}"
     )
 
 
@@ -251,18 +276,24 @@ def test_limit_none_never_raises(make_manager, cluster):
 
 
 def test_create_compute_services_continues_past_failed_job(
-    make_manager, cluster, monkeypatch, caplog
+    make_manager, cluster, caplog
 ):
     mgr = make_manager()
     cluster.add_job("evicted", failed=1)
-    submitted = []
-    monkeypatch.setattr(K8SBatchApi, "submit_job", lambda self, job: submitted.append(job))
-    monkeypatch.setattr(K8SManager, "_new_job", lambda self: make_job("new"))
 
     with caplog.at_level(logging.ERROR):
         created = mgr.create_compute_services({"compute_service_ids": []}, 2)
 
     assert created == 2
-    assert len(submitted) == 2
+    assert len(cluster.submitted) == 2
     assert cluster.deleted == ["evicted"]
     assert "Deleted failed Job `evicted`" in caplog.text
+
+
+def test_cli_clear_jobs_prints_reasons(cluster):
+    cluster.add_job("bad", failed=1)
+    result = CliRunner().invoke(cli, ["k8s", "clear-jobs", "-n", NAMESPACE])
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "Deleted failed Job `bad`: unknown reason\n"
+    assert cluster.deleted == ["bad"]
