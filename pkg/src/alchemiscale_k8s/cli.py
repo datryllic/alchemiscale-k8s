@@ -94,8 +94,18 @@ def k8s():
     "namespace",
     type=str,
     required=True,
-    default=None,
+    help="Namespace the manager's Jobs run in.",
 )
-def k8s_clear_jobs(namespace):
-    batch_api = K8SBatchApi(namespace)
-    batch_api.clear_failed_jobs()
+@click.option(
+    "-m",
+    "--manager-name",
+    "manager_name",
+    type=str,
+    required=True,
+    help="Name of the manager whose failed Jobs to clear.",
+)
+def k8s_clear_jobs(namespace, manager_name):
+    """Delete a manager's failed Jobs."""
+    batch_api = K8SBatchApi(namespace, manager_name)
+    for name, reason in batch_api.clear_failed_jobs().items():
+        click.echo(f"Deleted failed Job `{name}`: {reason}")

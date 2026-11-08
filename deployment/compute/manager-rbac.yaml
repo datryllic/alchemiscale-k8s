@@ -1,0 +1,50 @@
+# RBAC for running the alchemiscale-k8s compute manager (`K8SManager`) as a
+# pod inside the cluster. The namespace's default ServiceAccount cannot manage
+# Jobs, so the manager Deployment (see manager-deployment.yaml) runs as this
+# dedicated ServiceAccount instead.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alchemiscale-k8s-manager
+  namespace: alchemiscale
+  labels:
+    app: alchemiscale-k8s-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: alchemiscale-k8s-manager
+  namespace: alchemiscale
+  labels:
+    app: alchemiscale-k8s-manager
+rules:
+  # The manager lists Jobs to check their health and find pending ones,
+  # creates one Job per compute service, and deletes finished Jobs.
+  # Deletion uses `propagationPolicy: Foreground`, which needs only `delete`
+  # on the Job: the garbage collector removes the Job's pods using its own
+  # permissions.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Read-only access to pods, so the manager can log the termination reasons
+  # (e.g. OOMKilled, Evicted) of the pods behind failed Jobs. Only `list` is
+  # used; without it the manager still works, but logs "pods unavailable".
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alchemiscale-k8s-manager
+  namespace: alchemiscale
+  labels:
+    app: alchemiscale-k8s-manager
+subjects:
+  - kind: ServiceAccount
+    name: alchemiscale-k8s-manager
+    namespace: alchemiscale
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: alchemiscale-k8s-manager

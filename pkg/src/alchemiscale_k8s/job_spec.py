@@ -50,8 +50,8 @@ _METADATA_KEYS = {"labels", "annotations"}
 # manager-owned values; a user value is accepted only if it equals these
 POD_SPEC_OWNED = {"restartPolicy": "Never"}
 JOB_SPEC_OWNED = {
-    # retried pods would count toward ``status.failed`` and trip the
-    # manager's Job health check while the Job is still running
+    # one pod per Job: a retried pod would count toward ``status.failed``,
+    # and the manager would delete the Job while it is still retrying
     "backoffLimit": 0,
     # each Job is exactly one compute service with a unique ``--name``
     "parallelism": 1,

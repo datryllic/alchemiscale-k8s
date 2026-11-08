@@ -19,6 +19,11 @@ from kubernetes.client.exceptions import ApiException
 from alchemiscale_k8s.job_spec import build_job, load_job_spec, validate_job_spec
 
 
+# label applied to every Job (and its pods) created by a K8SManager; its value
+# is the manager's name, so each manager only acts on the Jobs it created
+MANAGER_LABEL_KEY = "k8s.alchemiscale.org/compute-manager"
+
+
 class JobNotFoundError(Exception): ...
 
 
@@ -29,35 +34,40 @@ class K8SBatchApiException(Exception): ...
 
 
 class K8SBatchApi:
-    """Wrapper around the python kubernetes client."""
+    """Wrapper around the python kubernetes client.
+
+    Only acts on the Jobs in ``namespace`` created by the manager named
+    ``manager_name``.
+    """
 
     def __init__(
         self,
         namespace: str,
+        manager_name: str,
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
         retry_max_seconds: float = 60.0,
     ):
         self.batch_api = None
+        self.core_api = None
         self.namespace = namespace
+        self.label_selector = f"{MANAGER_LABEL_KEY}={manager_name}"
 
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
 
     def _create_client(f):
+        """Load the k8s config and open an API client for the duration of the
+        call, exposed as ``self.batch_api`` and ``self.core_api``."""
+
         @wraps(f)
         def _wrapper(self, *args, **kwargs):
-
             config.load_config()
-            self.batch_api = client.BatchV1Api()
-
-            try:
-                res = f(self, *args, **kwargs)
-            finally:
-                self.batch_api.api_client.close()
-
-            return res
+            with client.ApiClient() as api_client:
+                self.batch_api = client.BatchV1Api(api_client)
+                self.core_api = client.CoreV1Api(api_client)
+                return f(self, *args, **kwargs)
 
         return _wrapper
 
@@ -94,16 +104,46 @@ class K8SBatchApi:
 
         return _wrapper
 
-    def check_job_health(self):
-        """Check for any failed jobs within the namespace.
+    def describe_job_failure(self, job: client.V1Job) -> str:
+        """Best-effort reason for a failed Job: its ``Failed`` condition plus
+        its pods' termination reasons. Never raises."""
 
-        If a job has any failed pods, this method raises a JobFailureError.
-        """
-        for job in self.get_jobs():
-            if job.status.failed:
-                raise JobFailureError(
-                    f"Job `{job.metadata.name}` failed, check its status and remove it before restarting the manager.",
-                )
+        def fmt(reason, message):
+            return f"{reason}: {message}" if message else reason
+
+        parts = [
+            fmt(c.reason, c.message)
+            for c in job.status.conditions or []
+            if c.type == "Failed" and c.status == "True"
+        ]
+        try:
+            pods = self._list_job_pods(job.metadata.name)
+        except Exception as e:
+            detail = f"{e.status} {e.reason}" if isinstance(e, ApiException) else e
+            parts.append(f"pods unavailable: {detail}")
+            pods = []
+        for pod in pods:
+            reasons = (
+                [fmt(pod.status.reason, pod.status.message)]
+                if pod.status.reason
+                else []
+            )
+            reasons += [
+                f"container `{cs.name}` {cs.state.terminated.reason} "
+                f"(exit code {cs.state.terminated.exit_code})"
+                for cs in pod.status.container_statuses or []
+                if cs.state and cs.state.terminated and cs.state.terminated.reason
+            ]
+            if reasons:
+                parts.append(f"{pod.metadata.name}: {', '.join(reasons)}")
+        return " | ".join(parts) or "unknown reason"
+
+    @_create_client
+    def _list_job_pods(self, job_name: str) -> list[client.V1Pod]:
+        """List a Job's pods. Not retried: only used for diagnostics."""
+        return self.core_api.list_namespaced_pod(
+            self.namespace, label_selector=f"job-name={job_name}"
+        ).items
 
     @_retry
     @_create_client
@@ -149,11 +189,14 @@ class K8SBatchApi:
             if job.status.succeeded:
                 self.delete_job(job)
 
-    def clear_failed_jobs(self):
-        """Remove all failed jobs."""
+    def clear_failed_jobs(self) -> dict[str, str]:
+        """Remove all failed jobs, returning ``{name: failure reason}``."""
+        failed = {}
         for job in self.get_jobs():
             if job.status.failed:
+                failed[job.metadata.name] = self.describe_job_failure(job)
                 self.delete_job(job)
+        return failed
 
     def jobs_pending(self) -> bool:
         """Check for any pending jobs.
@@ -168,9 +211,11 @@ class K8SBatchApi:
     @_retry
     @_create_client
     def get_jobs(self) -> list[client.V1Job]:
-        """Retrieve all job data under the namespace."""
+        """Retrieve this manager's Jobs in the namespace."""
         try:
-            return self.batch_api.list_namespaced_job(namespace=self.namespace).items
+            return self.batch_api.list_namespaced_job(
+                namespace=self.namespace, label_selector=self.label_selector
+            ).items
         except Exception as e:
             raise K8SBatchApiException(e.args)
 
@@ -193,6 +238,7 @@ class K8SManager(ComputeManager):
 
         self.batch_api = K8SBatchApi(
             self.settings.namespace,
+            self.settings.name,
             max_retries=self.settings.k8s_max_retries,
             retry_base_seconds=self.settings.k8s_retry_base_seconds,
             retry_max_seconds=self.settings.k8s_retry_max_seconds,
@@ -209,6 +255,7 @@ class K8SManager(ComputeManager):
         ):
             self.logger.warning(f"Job spec: {warning}")
         self.watchlist = []
+        self.consecutive_failed_cycles = 0
 
     def create_compute_services(self, data, target):
         """Submit up to ``target`` k8s Jobs after running our health checks.
@@ -222,7 +269,7 @@ class K8SManager(ComputeManager):
         server_job_names = {csid.split("-")[0] for csid in data["compute_service_ids"]}
 
         self.logger.info("Checking health of Jobs")
-        self.batch_api.check_job_health()
+        self.handle_failed_jobs()
         self.logger.info(
             "Checking consistency of ready Jobs with alchemiscale compute API"
         )
@@ -240,13 +287,37 @@ class K8SManager(ComputeManager):
             self.logger.info(f"Created Job: {job['metadata']['name']}")
         return target
 
+    def handle_failed_jobs(self) -> dict[str, str]:
+        """Log and delete failed Jobs, raising :class:`JobFailureError` if
+        they are found in more than ``max_consecutive_failed_cycles``
+        consecutive checks. Returns ``{name: failure reason}``."""
+        failed = self.batch_api.clear_failed_jobs()
+        for name, reason in failed.items():
+            self.logger.error(f"Deleted failed Job `{name}`: {reason}")
+
+        self.consecutive_failed_cycles = (
+            self.consecutive_failed_cycles + 1 if failed else 0
+        )
+        limit = self.settings.max_consecutive_failed_cycles
+        if limit is not None and self.consecutive_failed_cycles > limit:
+            raise JobFailureError(
+                f"Failed Jobs found in {self.consecutive_failed_cycles} consecutive "
+                f"cycles, exceeding max_consecutive_failed_cycles={limit}; "
+                f"most recent: {', '.join(failed)}. Check the job spec, image "
+                f"and compute service settings."
+            )
+        return failed
+
     def _job_labels(self) -> dict[str, str]:
         """Labels the manager sets on every Job and its pod template.
 
         These are manager-owned: a job spec that sets one of these keys to a
         different value is rejected.
         """
-        return {"app": "alchemiscale-compute"}
+        return {
+            "app": "alchemiscale-compute",
+            MANAGER_LABEL_KEY: self.settings.name,
+        }
 
     def _job_args(self, jobname: str) -> list[str]:
         """Args the manager appends to the first container of every Job."""
