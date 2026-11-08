@@ -28,7 +28,13 @@ alchemiscale-k8s manager start -c manager-config.yaml -s service-config.yaml
 Failed Jobs (e.g. from evicted, preempted or OOM-killed pods) are logged with their failure reason and deleted, and the manager keeps running.
 This check runs only in cycles where the manager creates compute services, i.e. when there are tasks to run and capacity to spare.
 If failed Jobs are found in more than `max_consecutive_failed_cycles` consecutive such cycles, the manager stops with a `JobFailureError`, since this usually indicates a bad image, job spec or compute service settings.
-In that case, diagnose the cause of the job failures, run `alchemiscale-k8s k8s clear-jobs` to clear out any remaining failed Jobs, and rerun the Kubernetes compute manager.
+In that case, diagnose the cause of the job failures, run `alchemiscale-k8s k8s clear-jobs --namespace <namespace> --manager-name <name>` to clear out that manager's remaining failed Jobs, and rerun the Kubernetes compute manager.
+
+### Job ownership
+
+Each Job (and its pods) created by a manager is labeled `k8s.alchemiscale.org/compute-manager: <name>`, where `<name>` is the manager's `name` setting.
+A manager only inspects, waits on, and deletes Jobs carrying its own label, so it can share a namespace with other workloads and with other managers.
+`alchemiscale-k8s k8s clear-jobs` likewise only touches the named manager's Jobs.
 
 ### `K8SManagerSettings` configuration
 

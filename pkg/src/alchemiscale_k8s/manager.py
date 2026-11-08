@@ -18,6 +18,11 @@ from kubernetes.utils import create_from_dict
 from kubernetes.client.exceptions import ApiException
 
 
+# label applied to every Job (and its pods) created by a K8SManager; its value
+# is the manager's name, so each manager only acts on the Jobs it created
+MANAGER_LABEL_KEY = "k8s.alchemiscale.org/compute-manager"
+
+
 class JobNotFoundError(Exception): ...
 
 
@@ -28,11 +33,16 @@ class K8SBatchApiException(Exception): ...
 
 
 class K8SBatchApi:
-    """Wrapper around the python kubernetes client."""
+    """Wrapper around the python kubernetes client.
+
+    Only acts on the Jobs in ``namespace`` created by the manager named
+    ``manager_name``.
+    """
 
     def __init__(
         self,
         namespace: str,
+        manager_name: str,
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
         retry_max_seconds: float = 60.0,
@@ -40,6 +50,7 @@ class K8SBatchApi:
         self.batch_api = None
         self.core_api = None
         self.namespace = namespace
+        self.label_selector = f"{MANAGER_LABEL_KEY}={manager_name}"
 
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
@@ -199,9 +210,11 @@ class K8SBatchApi:
     @_retry
     @_create_client
     def get_jobs(self) -> list[client.V1Job]:
-        """Retrieve all job data under the namespace."""
+        """Retrieve this manager's Jobs in the namespace."""
         try:
-            return self.batch_api.list_namespaced_job(namespace=self.namespace).items
+            return self.batch_api.list_namespaced_job(
+                namespace=self.namespace, label_selector=self.label_selector
+            ).items
         except Exception as e:
             raise K8SBatchApiException(e.args)
 
@@ -221,6 +234,7 @@ class K8SManager(ComputeManager):
 
         self.batch_api = K8SBatchApi(
             self.settings.namespace,
+            self.settings.name,
             max_retries=self.settings.k8s_max_retries,
             retry_base_seconds=self.settings.k8s_retry_base_seconds,
             retry_max_seconds=self.settings.k8s_retry_max_seconds,
@@ -295,8 +309,9 @@ class K8SManager(ComputeManager):
             ["--compute-manager-id", str(self.compute_manager_id)]
         )
 
+        labels = {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: self.settings.name}
         template = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(labels={"app": "alchemiscale-compute"}),
+            metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1PodSpec(
                 restart_policy="Never", containers=containers, volumes=volumes
             ),
@@ -311,7 +326,7 @@ class K8SManager(ComputeManager):
             metadata=client.V1ObjectMeta(
                 name=jobname,
                 namespace=self.settings.namespace,
-                labels={"app": "alchemiscale-compute"},
+                labels=labels,
             ),
             spec=spec,
         )

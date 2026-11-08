@@ -20,6 +20,7 @@ from alchemiscale_k8s.manager import JobFailureError, K8SBatchApi, K8SManager
 from alchemiscale_k8s.settings import K8SManagerSettings
 
 NAMESPACE = "alchemiscale"
+MANAGER_NAME = "testmgr"
 
 
 def make_job(name, *, failed=None, succeeded=None, active=None, ready=None,
@@ -113,7 +114,7 @@ def cluster(monkeypatch):
 @pytest.fixture
 def batch_api(cluster):
     # no retries, so a call the fakes miss fails fast instead of backing off
-    return K8SBatchApi(NAMESPACE, max_retries=0)
+    return K8SBatchApi(NAMESPACE, MANAGER_NAME, max_retries=0)
 
 
 @pytest.fixture
@@ -149,7 +150,7 @@ def make_manager(cluster, tmp_path, monkeypatch):
     def _make(**settings_overrides):
         settings = K8SManagerSettings(
             **{
-                "name": "testmgr",
+                "name": MANAGER_NAME,
                 "logfile": None,
                 "max_compute_services": 10,
                 "job_spec_path": job_spec,
@@ -292,7 +293,9 @@ def test_create_compute_services_continues_past_failed_job(
 
 def test_cli_clear_jobs_prints_reasons(cluster):
     cluster.add_job("bad", failed=1)
-    result = CliRunner().invoke(cli, ["k8s", "clear-jobs", "-n", NAMESPACE])
+    result = CliRunner().invoke(
+        cli, ["k8s", "clear-jobs", "-n", NAMESPACE, "-m", MANAGER_NAME]
+    )
 
     assert result.exit_code == 0, result.output
     assert result.output == "Deleted failed Job `bad`: unknown reason\n"
