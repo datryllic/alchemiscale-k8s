@@ -55,6 +55,16 @@ class K8SManagerSettings(ComputeManagerSettings):
             "avoids runaway exponential backoff while allowing for many retries."
         ),
     )
+    max_consecutive_failed_cycles: int | None = Field(
+        5,
+        ge=0,
+        description=(
+            "Failed Jobs are logged and deleted whenever the manager creates "
+            "compute services; stop with JobFailureError if they are found in "
+            "more than this many consecutive such cycles. 0 stops on the first "
+            "failed Job; null never stops."
+        ),
+    )
 
     @field_validator("name")
     @classmethod

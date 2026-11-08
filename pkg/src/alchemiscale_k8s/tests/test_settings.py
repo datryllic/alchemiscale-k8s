@@ -72,6 +72,11 @@ def test_job_creation_rate_no_longer_a_field():
     assert "max_submit_per_cycle" in fields  # inherited from ComputeManagerSettings
 
 
+def test_max_consecutive_failed_cycles_rejects_negative():
+    with pytest.raises(ValidationError):
+        K8SManagerSettings(**_base_kwargs(max_consecutive_failed_cycles=-1))
+
+
 # --- name validation (issue #14) ---
 
 # Kubernetes DNS-1123 subdomain regex, as used to validate Job names.

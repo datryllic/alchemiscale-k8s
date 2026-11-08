@@ -26,10 +26,9 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  # Read-only access to pods, so the manager can inspect the pods behind
-  # failed Jobs (e.g. to log termination reasons such as OOMKilled or
-  # Evicted). The current release does not read pods; this is granted ahead
-  # of the failed-Job handling planned in #29.
+  # Read-only access to pods, so the manager can log the termination reasons
+  # (e.g. OOMKilled, Evicted) of the pods behind failed Jobs. Only `list` is
+  # used; without it the manager still works, but logs "pods unavailable".
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
