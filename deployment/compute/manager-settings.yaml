@@ -1,0 +1,33 @@
+---
+# `K8SManagerSettings` for the alchemiscale-k8s compute manager.
+# Deployed in a ConfigMap together with manager-job-spec.yaml:
+# `bash compute/manager-configmap.sh`.
+
+# Name of the manager; used to derive its `ComputeManagerID`. Must be unique
+# among managers using the same alchemiscale server.
+name: k8smanager
+
+# Path to file for logging output; if `null`, logs go to stderr.
+logfile: null
+
+# The loglevel at which to report.
+loglevel: INFO
+
+# Maximum number of compute service Jobs to run at once.
+max_compute_services: 2
+
+# Seconds to sleep between manager cycles.
+sleep_interval: 1800
+
+# Path to the Job spec, as mounted in the manager pod from the
+# `alchemiscale-k8s-manager-config` ConfigMap.
+job_spec_path: /mnt/manager/manager-job-spec.yaml
+
+# Namespace to create compute service Jobs in. Must match the namespace of
+# the Role and RoleBinding in manager-rbac.yaml.
+namespace: alchemiscale
+
+# Exponential backoff for requests to the Kubernetes API.
+k8s_max_retries: 5
+k8s_retry_base_seconds: 2.0
+k8s_retry_max_seconds: 60.0

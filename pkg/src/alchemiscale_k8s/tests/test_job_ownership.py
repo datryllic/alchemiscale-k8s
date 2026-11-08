@@ -25,7 +25,9 @@ MANAGER_NAME = "testmgr"
 
 def _job(name, labels, **status):
     """A V1Job-like object with the given labels and status fields."""
-    status_fields = dict(failed=None, succeeded=None, active=None, ready=None)
+    status_fields = dict(
+        failed=None, succeeded=None, active=None, ready=None, conditions=None
+    )
     status_fields.update(status)
     return SimpleNamespace(
         metadata=SimpleNamespace(name=name, namespace=NAMESPACE, labels=labels),
@@ -98,8 +100,13 @@ def k8s(monkeypatch):
 
     batch.list_namespaced_job.side_effect = list_namespaced_job
 
+    # failed Jobs are described before deletion; their pods are looked up
+    core = mock.MagicMock()
+    core.list_namespaced_pod.return_value = SimpleNamespace(items=[])
+
     monkeypatch.setattr("kubernetes.config.load_config", mock.MagicMock())
     monkeypatch.setattr("kubernetes.client.BatchV1Api", mock.MagicMock(return_value=batch))
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", mock.MagicMock(return_value=core))
     return batch
 
 
@@ -199,8 +206,9 @@ def test_manager_ignores_foreign_jobs(k8s, manager):
     get flagged."""
     server_job_names = {f"{MANAGER_NAME}.running"}
 
-    # foreign/other-manager/legacy failed Jobs don't crash the manager
-    manager.batch_api.check_job_health()
+    # foreign/other-manager/legacy failed Jobs are neither deleted nor counted
+    assert manager.handle_failed_jobs() == {}
+    assert manager.consecutive_failed_cycles == 0
 
     # foreign ready Jobs aren't flagged as unregistered, even on a second pass
     watchlist = []
