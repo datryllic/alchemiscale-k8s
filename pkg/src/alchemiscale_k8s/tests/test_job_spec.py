@@ -1,7 +1,10 @@
 """Tests for job spec loading, validation and Job rendering (no cluster needed)."""
 
 import logging
+import pathlib
+import re
 from copy import deepcopy
+from unittest import mock
 
 import pytest
 import yaml
@@ -44,7 +47,7 @@ VOLUMES = [
     }
 ]
 
-LEGACY = {"containers": [CONTAINER], "volumes": VOLUMES}
+MINIMAL = {"spec": {"containers": [CONTAINER], "volumes": VOLUMES}}
 
 NEW = {
     "metadata": {
@@ -102,8 +105,8 @@ def _deserialize(body) -> client.V1Job:
 # --- forms --------------------------------------------------------------------
 
 
-def test_legacy_form():
-    body = _build(LEGACY)
+def test_minimal_form():
+    body = _build(MINIMAL)
     assert body["apiVersion"] == "batch/v1"
     assert body["kind"] == "Job"
     assert body["metadata"] == {"labels": LABELS, "name": "mgr.abc", "namespace": "ns"}
@@ -114,12 +117,6 @@ def test_legacy_form():
     assert pod["restartPolicy"] == "Never"
     assert pod["volumes"] == VOLUMES
     assert pod["containers"][0]["args"] == CONTAINER["args"] + ARGS
-
-
-def test_legacy_form_extra_podspec_fields():
-    raw = dict(LEGACY, nodeSelector={"gpu": "yes"})
-    body = _build(raw)
-    assert body["spec"]["template"]["spec"]["nodeSelector"] == {"gpu": "yes"}
 
 
 def test_new_form_keeps_all_fields():
@@ -154,11 +151,6 @@ def test_new_form_keeps_all_fields():
     assert pod.containers[0].args == CONTAINER["args"] + ARGS
 
 
-def test_legacy_and_new_forms_equivalent():
-    new = {"spec": deepcopy(LEGACY)}
-    assert _build(LEGACY) == _build(new)
-
-
 def test_body_is_serializable_like_typed_model():
     """The dict body survives a round trip through the client models."""
     body = _build(NEW)
@@ -180,9 +172,9 @@ def test_build_does_not_mutate_spec():
 
 
 def test_load_does_not_mutate_input():
-    raw = deepcopy(LEGACY)
+    raw = deepcopy(MINIMAL)
     _build(raw)
-    assert raw == LEGACY
+    assert raw == MINIMAL
 
 
 # --- structural errors --------------------------------------------------------
@@ -193,6 +185,7 @@ def test_load_does_not_mutate_input():
     [
         ([], "mapping"),
         ({"spec": {"containers": [CONTAINER]}, "containers": []}, "top-level"),
+        ({"containers": [CONTAINER], "volumes": VOLUMES}, "belong under `spec`"),
         ({"spec": {}}, "non-empty list"),
         ({"spec": {"containers": []}}, "non-empty list"),
         ({"spec": {"containers": [{"name": "a"}]}}, "args"),
@@ -274,7 +267,7 @@ def test_extra_manager_labels_applied_everywhere():
 
 def test_validate_clean_spec_has_no_warnings():
     assert validate_job_spec(load_job_spec(NEW), "ns", LABELS, ARGS) == []
-    assert validate_job_spec(load_job_spec(LEGACY), "ns", LABELS, ARGS) == []
+    assert validate_job_spec(load_job_spec(MINIMAL), "ns", LABELS, ARGS) == []
 
 
 def test_validate_warns_on_unknown_fields():
@@ -300,8 +293,8 @@ def test_validate_rejects_wrong_shapes(pod_spec, match):
 
 
 def test_validate_rejects_model_errors():
-    raw = deepcopy(LEGACY)
-    raw["containers"] = [{"image": "x", "args": []}]  # missing required name
+    raw = deepcopy(MINIMAL)
+    raw["spec"]["containers"] = [{"image": "x", "args": []}]  # missing required name
     with pytest.raises(JobSpecError, match="name"):
         validate_job_spec(load_job_spec(raw), "ns", LABELS, ARGS)
 
@@ -310,7 +303,18 @@ def test_validate_rejects_model_errors():
 
 
 @pytest.fixture
-def make_manager(tmp_path):
+def make_manager(tmp_path, monkeypatch):
+    """Build a K8SManager through its real __init__, with the alchemiscale
+    API client replaced so nothing touches the network or the disk cache."""
+    monkeypatch.setattr(
+        "alchemiscale.compute.manager.AlchemiscaleComputeManagerClient", mock.Mock()
+    )
+    # upstream __init__ adds a StreamHandler and sets the level on every
+    # construction; monkeypatch restores both afterwards
+    upstream_logger = logging.getLogger("AlchemiscaleComputeManager")
+    monkeypatch.setattr(upstream_logger, "handlers", list(upstream_logger.handlers))
+    monkeypatch.setattr(upstream_logger, "level", upstream_logger.level)
+
     def _make(raw):
         path = tmp_path / "job-spec.yaml"
         path.write_text(yaml.safe_dump(raw))
@@ -334,7 +338,7 @@ def make_manager(tmp_path):
     return _make
 
 
-@pytest.mark.parametrize("raw", [LEGACY, NEW])
+@pytest.mark.parametrize("raw", [MINIMAL, NEW])
 def test_manager_new_job(make_manager, raw):
     manager = make_manager(raw)
     job = manager._new_job()
@@ -366,14 +370,19 @@ def test_manager_logs_unknown_field_warnings(make_manager, caplog):
     assert "nodeSelecter" in caplog.text
 
 
-def test_shipped_readme_examples_validate():
-    """The job spec examples in the package README load and validate."""
-    import pathlib
-    import re
+REPO = pathlib.Path(__file__).parents[4]
 
-    readme = pathlib.Path(__file__).parents[3] / "README.md"
-    blocks = re.findall(r"```yaml\n(# \./config/job-spec[^\n]*\n.*?)```", readme.read_text(), re.S)
+
+def _shipped_job_specs():
+    readme = (REPO / "pkg" / "README.md").read_text()
+    blocks = re.findall(r"```yaml\n(# \./config/job-spec[^\n]*\n.*?)```", readme, re.S)
     assert len(blocks) >= 2
-    for block in blocks:
-        spec = load_job_spec(yaml.safe_load(block))
-        assert validate_job_spec(spec, "ns", LABELS, ARGS) == []
+    deployment = (REPO / "deployment" / "compute" / "manager-job-spec.yaml").read_text()
+    return [*blocks, deployment]
+
+
+@pytest.mark.parametrize("text", _shipped_job_specs())
+def test_shipped_job_specs_validate(text):
+    """The job specs in the package README and deployment/ load and validate."""
+    spec = load_job_spec(yaml.safe_load(text))
+    assert validate_job_spec(spec, "ns", LABELS, ARGS) == []

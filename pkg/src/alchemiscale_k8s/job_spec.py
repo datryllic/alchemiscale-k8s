@@ -19,9 +19,6 @@ written in ordinary Kubernetes camelCase YAML::
         activeDeadlineSeconds: 86400
         ttlSecondsAfterFinished: 3600
 
-The legacy form, with PodSpec fields such as ``containers`` and ``volumes``
-at the top level, is still accepted and treated as ``spec``.
-
 The manager owns a few values and overlays them on every Job (see
 :func:`build_job`). A user value for a manager-owned field is accepted only
 if it equals the manager's value; any other value raises
@@ -76,17 +73,11 @@ def load_job_spec(raw) -> dict:
         raise JobSpecError("job spec must be a YAML mapping")
 
     raw = deepcopy(raw)
-    if not (_TOP_LEVEL_KEYS & raw.keys()):
-        # legacy form: top-level PodSpec fields (containers, volumes, ...)
-        raw = {"spec": raw}
-
     unknown = raw.keys() - _TOP_LEVEL_KEYS
     if unknown:
         raise JobSpecError(
             f"unexpected top-level key(s) {sorted(unknown)} in job spec; "
-            "PodSpec fields such as `containers` belong under `spec` "
-            "(top-level `containers` is only accepted when none of "
-            f"{sorted(_TOP_LEVEL_KEYS)} are present)"
+            "PodSpec fields such as `containers` belong under `spec`"
         )
 
     job = raw.get("job") or {}

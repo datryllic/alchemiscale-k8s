@@ -204,32 +204,6 @@ job:
     ttlSecondsAfterFinished: 86400
 ```
 
-#### Legacy form
-
-Earlier versions read only `containers` and `volumes`, placed at the top level of the file.
-This form still works: a file with no `metadata`, `spec` or `job` key is treated as the `spec` section.
-New files should use the form above.
-
-```yaml
-# ./config/job-spec.yaml (legacy form)
-containers:
-- name: alchemiscale-synchronous-container
-  image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
-  args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
-  volumeMounts:
-    - name: alchemiscale-compute-settings-yaml
-      mountPath: "/mnt/settings"
-      readOnly: true
-  env:
-    # keep in step with the container CPU limit to avoid CFS throttling
-    - name: OPENMM_CPU_THREADS
-      value: "2"
-volumes:
-  - name: alchemiscale-compute-settings-yaml
-    secret:
-      secretName: alchemiscale-compute-settings-yaml
-```
-
 ### `ComputeServiceSettings` configuration
 
 This configuration specifies the settings used by a created compute service.
