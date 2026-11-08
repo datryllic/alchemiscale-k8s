@@ -11,16 +11,12 @@ from kubernetes import client
 from alchemiscale.compute.settings import ComputeServiceSettings
 
 from alchemiscale_k8s.cli import cli
-from alchemiscale_k8s.manager import (
-    MANAGER_LABEL_KEY,
-    K8SBatchApi,
-    K8SManager,
-    manager_label_selector,
-)
+from alchemiscale_k8s.manager import MANAGER_LABEL_KEY, K8SBatchApi, K8SManager
 from alchemiscale_k8s.settings import K8SManagerSettings
 
 NAMESPACE = "alchemiscale"
 MANAGER_NAME = "testmgr"
+SELECTOR = f"{MANAGER_LABEL_KEY}={MANAGER_NAME}"
 
 
 def _job(name, labels, **status):
@@ -36,18 +32,9 @@ def _job(name, labels, **status):
 
 
 def _matches(labels, selector):
-    """Evaluate the equality/existence selectors this package uses."""
-    if selector is None:
-        return True
-    labels = labels or {}
-    for term in selector.split(","):
-        if "=" in term:
-            key, value = term.split("=", 1)
-            if labels.get(key) != value:
-                return False
-        elif term not in labels:
-            return False
-    return True
+    """Evaluate the ``key=value`` selector this package uses."""
+    key, value = selector.split("=", 1)
+    return (labels or {}).get(key) == value
 
 
 @pytest.fixture
@@ -74,8 +61,8 @@ def k8s(monkeypatch):
             {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: "othermgr"},
             succeeded=1,
         ),
-        # a Job created before Jobs were labeled by manager
-        _job("legacy.failed", {"app": "alchemiscale-compute"}, failed=1),
+        # an alchemiscale Job without the manager label
+        _job("unlabeled.failed", {"app": "alchemiscale-compute"}, failed=1),
         # Jobs from this manager
         _job(
             f"{MANAGER_NAME}.succeeded",
@@ -92,7 +79,7 @@ def k8s(monkeypatch):
 
     batch = mock.MagicMock()
 
-    def list_namespaced_job(namespace, label_selector=None):
+    def list_namespaced_job(namespace, label_selector):
         assert namespace == NAMESPACE
         return SimpleNamespace(
             items=[j for j in jobs if _matches(j.metadata.labels, label_selector)]
@@ -160,23 +147,10 @@ def manager(job_spec_path):
         return K8SManager(settings, service_settings)
 
 
-def test_manager_label_selector():
-    assert manager_label_selector("mgr") == f"{MANAGER_LABEL_KEY}=mgr"
-    assert manager_label_selector() == MANAGER_LABEL_KEY
-
-
-def test_batch_api_without_selector_lists_whole_namespace(k8s):
-    """Backward compatible: no selector means no ``label_selector`` kwarg."""
-    jobs = K8SBatchApi(NAMESPACE).get_jobs()
-    k8s.list_namespaced_job.assert_called_once_with(namespace=NAMESPACE)
-    assert len(jobs) == 9
-
-
 def test_batch_api_passes_selector(k8s):
-    selector = manager_label_selector(MANAGER_NAME)
-    jobs = K8SBatchApi(NAMESPACE, label_selector=selector).get_jobs()
+    jobs = K8SBatchApi(NAMESPACE, MANAGER_NAME).get_jobs()
     k8s.list_namespaced_job.assert_called_once_with(
-        namespace=NAMESPACE, label_selector=selector
+        namespace=NAMESPACE, label_selector=SELECTOR
     )
     assert {j.metadata.name for j in jobs} == {
         f"{MANAGER_NAME}.succeeded",
@@ -185,7 +159,7 @@ def test_batch_api_passes_selector(k8s):
 
 
 def test_manager_batch_api_scoped_to_manager_name(manager):
-    assert manager.batch_api.label_selector == f"{MANAGER_LABEL_KEY}={MANAGER_NAME}"
+    assert manager.batch_api.label_selector == SELECTOR
     assert manager.batch_api.namespace == NAMESPACE
 
 
@@ -206,7 +180,7 @@ def test_manager_ignores_foreign_jobs(k8s, manager):
     get flagged."""
     server_job_names = {f"{MANAGER_NAME}.running"}
 
-    # foreign/other-manager/legacy failed Jobs are neither deleted nor counted
+    # foreign, other-manager and unlabeled failed Jobs are neither deleted nor counted
     assert manager.handle_failed_jobs() == {}
     assert manager.consecutive_failed_cycles == 0
 
@@ -223,7 +197,7 @@ def test_manager_ignores_foreign_jobs(k8s, manager):
     # foreign pending Jobs don't block creation of compute services
     assert manager.batch_api.jobs_pending() is False
 
-    assert _selectors(k8s) == {f"{MANAGER_LABEL_KEY}={MANAGER_NAME}"}
+    assert _selectors(k8s) == {SELECTOR}
 
 
 def test_cli_clear_jobs_scoped_to_manager(k8s):
@@ -233,13 +207,4 @@ def test_cli_clear_jobs_scoped_to_manager(k8s):
     )
     assert result.exit_code == 0, result.output
     assert _selectors(k8s) == {f"{MANAGER_LABEL_KEY}=othermgr"}
-    assert _deleted(k8s) == {"othermgr.failed"}
-
-
-def test_cli_clear_jobs_unscoped_only_touches_managed_jobs(k8s):
-    """Without --manager-name, only Jobs carrying the manager label key are
-    cleared; foreign and pre-label (legacy) Jobs are left alone."""
-    result = CliRunner().invoke(cli, ["k8s", "clear-jobs", "--namespace", NAMESPACE])
-    assert result.exit_code == 0, result.output
-    assert _selectors(k8s) == {MANAGER_LABEL_KEY}
     assert _deleted(k8s) == {"othermgr.failed"}

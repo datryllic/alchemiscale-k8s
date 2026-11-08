@@ -3,7 +3,7 @@ import yaml
 
 from alchemiscale.compute.settings import ComputeServiceSettings
 
-from alchemiscale_k8s.manager import K8SManager, K8SBatchApi, manager_label_selector
+from alchemiscale_k8s.manager import K8SManager, K8SBatchApi
 from alchemiscale_k8s.settings import K8SManagerSettings
 
 
@@ -101,18 +101,11 @@ def k8s():
     "--manager-name",
     "manager_name",
     type=str,
-    default=None,
-    help=(
-        "Only clear failed Jobs created by the manager with this name. "
-        "If omitted, clear failed Jobs created by any alchemiscale-k8s manager "
-        "(Jobs carrying the alchemiscale.org/compute-manager label); "
-        "other Jobs in the namespace are never touched."
-    ),
+    required=True,
+    help="Name of the manager whose failed Jobs to clear.",
 )
 def k8s_clear_jobs(namespace, manager_name):
-    """Delete failed Jobs created by alchemiscale-k8s managers."""
-    batch_api = K8SBatchApi(
-        namespace, label_selector=manager_label_selector(manager_name)
-    )
+    """Delete a manager's failed Jobs."""
+    batch_api = K8SBatchApi(namespace, manager_name)
     for name, reason in batch_api.clear_failed_jobs().items():
         click.echo(f"Deleted failed Job `{name}`: {reason}")

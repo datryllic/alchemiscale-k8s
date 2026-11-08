@@ -23,17 +23,6 @@ from kubernetes.client.exceptions import ApiException
 MANAGER_LABEL_KEY = "alchemiscale.org/compute-manager"
 
 
-def manager_label_selector(manager_name: str | None = None) -> str:
-    """Label selector for Jobs created by a K8SManager.
-
-    With ``manager_name``, select only Jobs created by that manager. Without
-    it, select Jobs created by any K8SManager (those carrying the label key).
-    """
-    if manager_name is None:
-        return MANAGER_LABEL_KEY
-    return f"{MANAGER_LABEL_KEY}={manager_name}"
-
-
 class JobNotFoundError(Exception): ...
 
 
@@ -46,23 +35,22 @@ class K8SBatchApiException(Exception): ...
 class K8SBatchApi:
     """Wrapper around the python kubernetes client.
 
-    If ``label_selector`` is given, all operations only consider Jobs in
-    ``namespace`` matching it; otherwise they consider every Job in
-    ``namespace``.
+    Only acts on the Jobs in ``namespace`` created by the manager named
+    ``manager_name``.
     """
 
     def __init__(
         self,
         namespace: str,
+        manager_name: str,
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
         retry_max_seconds: float = 60.0,
-        label_selector: str | None = None,
     ):
         self.batch_api = None
         self.core_api = None
         self.namespace = namespace
-        self.label_selector = label_selector
+        self.label_selector = f"{MANAGER_LABEL_KEY}={manager_name}"
 
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
@@ -222,13 +210,10 @@ class K8SBatchApi:
     @_retry
     @_create_client
     def get_jobs(self) -> list[client.V1Job]:
-        """Retrieve all job data under the namespace matching the label selector."""
-        kwargs = {}
-        if self.label_selector is not None:
-            kwargs["label_selector"] = self.label_selector
+        """Retrieve this manager's Jobs in the namespace."""
         try:
             return self.batch_api.list_namespaced_job(
-                namespace=self.namespace, **kwargs
+                namespace=self.namespace, label_selector=self.label_selector
             ).items
         except Exception as e:
             raise K8SBatchApiException(e.args)
@@ -249,10 +234,10 @@ class K8SManager(ComputeManager):
 
         self.batch_api = K8SBatchApi(
             self.settings.namespace,
+            self.settings.name,
             max_retries=self.settings.k8s_max_retries,
             retry_base_seconds=self.settings.k8s_retry_base_seconds,
             retry_max_seconds=self.settings.k8s_retry_max_seconds,
-            label_selector=manager_label_selector(self.settings.name),
         )
 
         with open(self.settings.job_spec_path, "r") as job_spec_file:
@@ -324,13 +309,9 @@ class K8SManager(ComputeManager):
             ["--compute-manager-id", str(self.compute_manager_id)]
         )
 
+        labels = {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: self.settings.name}
         template = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(
-                labels={
-                    "app": "alchemiscale-compute",
-                    MANAGER_LABEL_KEY: self.settings.name,
-                }
-            ),
+            metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1PodSpec(
                 restart_policy="Never", containers=containers, volumes=volumes
             ),
@@ -345,10 +326,7 @@ class K8SManager(ComputeManager):
             metadata=client.V1ObjectMeta(
                 name=jobname,
                 namespace=self.settings.namespace,
-                labels={
-                    "app": "alchemiscale-compute",
-                    MANAGER_LABEL_KEY: self.settings.name,
-                },
+                labels=labels,
             ),
             spec=spec,
         )

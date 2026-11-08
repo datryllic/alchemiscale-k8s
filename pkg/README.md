@@ -29,18 +29,12 @@ Failed Jobs (e.g. from evicted, preempted or OOM-killed pods) are logged with th
 This check runs only in cycles where the manager creates compute services, i.e. when there are tasks to run and capacity to spare.
 If failed Jobs are found in more than `max_consecutive_failed_cycles` consecutive such cycles, the manager stops with a `JobFailureError`, since this usually indicates a bad image, job spec or compute service settings.
 In that case, diagnose the cause of the job failures, run `alchemiscale-k8s k8s clear-jobs --namespace <namespace> --manager-name <name>` to clear out that manager's remaining failed Jobs, and rerun the Kubernetes compute manager.
-Without `--manager-name`, failed Jobs created by any `alchemiscale-k8s` manager in the namespace are cleared.
 
 ### Job ownership
 
 Each Job (and its pods) created by a manager is labeled `alchemiscale.org/compute-manager: <name>`, where `<name>` is the manager's `name` setting.
 A manager only inspects, waits on, and deletes Jobs carrying its own label, so it can share a namespace with other workloads and with other managers.
-`alchemiscale-k8s k8s clear-jobs` never touches Jobs without the `alchemiscale.org/compute-manager` label.
-The rules on `name` (see below) also make it a valid label value.
-
-**Upgrading from v0.2.x:** Jobs created by earlier versions lack the `alchemiscale.org/compute-manager` label, so an upgraded manager will not see them: they won't count as pending, and won't be deleted when they succeed or fail.
-Before upgrading, stop the manager and delete its old Jobs, e.g. with `kubectl delete jobs -n <namespace> -l app=alchemiscale-compute`.
-Note this selector matches Jobs from every manager in the namespace, so stop them all first, or delete the Jobs by name instead.
+`alchemiscale-k8s k8s clear-jobs` likewise only touches the named manager's Jobs.
 
 ### `K8SManagerSettings` configuration
 
