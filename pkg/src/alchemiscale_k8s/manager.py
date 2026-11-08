@@ -20,7 +20,7 @@ from kubernetes.client.exceptions import ApiException
 
 # label applied to every Job (and its pods) created by a K8SManager; its value
 # is the manager's name, so each manager only acts on the Jobs it created
-MANAGER_LABEL_KEY = "alchemiscale.org/compute-manager"
+MANAGER_LABEL_KEY = "k8s.alchemiscale.org/compute-manager"
 
 
 class JobNotFoundError(Exception): ...

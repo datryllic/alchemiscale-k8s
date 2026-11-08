@@ -32,7 +32,7 @@ In that case, diagnose the cause of the job failures, run `alchemiscale-k8s k8s 
 
 ### Job ownership
 
-Each Job (and its pods) created by a manager is labeled `alchemiscale.org/compute-manager: <name>`, where `<name>` is the manager's `name` setting.
+Each Job (and its pods) created by a manager is labeled `k8s.alchemiscale.org/compute-manager: <name>`, where `<name>` is the manager's `name` setting.
 A manager only inspects, waits on, and deletes Jobs carrying its own label, so it can share a namespace with other workloads and with other managers.
 `alchemiscale-k8s k8s clear-jobs` likewise only touches the named manager's Jobs.
 
