@@ -293,7 +293,9 @@ def test_create_compute_services_continues_past_failed_job(
 
 def test_cli_clear_jobs_prints_reasons(cluster):
     cluster.add_job("bad", failed=1)
-    result = CliRunner().invoke(cli, ["k8s", "clear-jobs", "-n", NAMESPACE, "-m", MANAGER_NAME])
+    result = CliRunner().invoke(
+        cli, ["k8s", "clear-jobs", "-n", NAMESPACE, "-m", MANAGER_NAME]
+    )
 
     assert result.exit_code == 0, result.output
     assert result.output == "Deleted failed Job `bad`: unknown reason\n"

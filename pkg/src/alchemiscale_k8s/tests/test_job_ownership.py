@@ -1,6 +1,6 @@
 """Tests that a K8SManager only acts on the Jobs it created (issue #31)."""
 
-from types import SimpleNamespace
+import logging
 from unittest import mock
 
 import pytest
@@ -11,200 +11,130 @@ from kubernetes import client
 from alchemiscale.compute.settings import ComputeServiceSettings
 
 from alchemiscale_k8s.cli import cli
-from alchemiscale_k8s.manager import MANAGER_LABEL_KEY, K8SBatchApi, K8SManager
+from alchemiscale_k8s.manager import MANAGER_LABEL_KEY, K8SManager
 from alchemiscale_k8s.settings import K8SManagerSettings
 
 NAMESPACE = "alchemiscale"
 MANAGER_NAME = "testmgr"
-SELECTOR = f"{MANAGER_LABEL_KEY}={MANAGER_NAME}"
+OWN = {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: MANAGER_NAME}
+OTHER = {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: "othermgr"}
 
 
-def _job(name, labels, **status):
-    """A V1Job-like object with the given labels and status fields."""
-    status_fields = dict(
-        failed=None, succeeded=None, active=None, ready=None, conditions=None
+def make_job(name, labels, **status):
+    return client.V1Job(
+        metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
+        status=client.V1JobStatus(**status),
     )
-    status_fields.update(status)
-    return SimpleNamespace(
-        metadata=SimpleNamespace(name=name, namespace=NAMESPACE, labels=labels),
-        status=SimpleNamespace(**status_fields),
-    )
-
-
-def _matches(labels, selector):
-    """Evaluate the ``key=value`` selector this package uses."""
-    key, value = selector.split("=", 1)
-    return (labels or {}).get(key) == value
 
 
 @pytest.fixture
 def k8s(monkeypatch):
-    """Mock the kubernetes client, with a namespace containing foreign Jobs.
+    """Mock the kubernetes client over a namespace shared with foreign Jobs.
 
     ``list_namespaced_job`` applies ``label_selector`` the way the API server
-    would, so these tests check both what we ask for and what we act on.
+    would, so the tests check what the manager acts on.
     """
     jobs = [
-        # Jobs from another workload that shares the namespace
-        _job("foreign-failed", {"app": "something-else"}, failed=1),
-        _job("foreign-succeeded", {"app": "something-else"}, succeeded=1),
-        _job("foreign-pending", None, active=1, ready=0),
-        _job("foreign-ready", {"app": "something-else"}, active=1, ready=1),
-        # Jobs from a second manager in the same namespace
-        _job(
-            "othermgr.failed",
-            {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: "othermgr"},
-            failed=1,
-        ),
-        _job(
-            "othermgr.succeeded",
-            {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: "othermgr"},
-            succeeded=1,
-        ),
-        # an alchemiscale Job without the manager label
-        _job("unlabeled.failed", {"app": "alchemiscale-compute"}, failed=1),
-        # Jobs from this manager
-        _job(
-            f"{MANAGER_NAME}.succeeded",
-            {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: MANAGER_NAME},
-            succeeded=1,
-        ),
-        _job(
-            f"{MANAGER_NAME}.running",
-            {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: MANAGER_NAME},
-            active=1,
-            ready=1,
-        ),
+        # another workload sharing the namespace
+        make_job("foreign-failed", {"app": "other"}, failed=1),
+        make_job("foreign-succeeded", {"app": "other"}, succeeded=1),
+        make_job("foreign-pending", None, active=1, ready=0),
+        make_job("foreign-ready", {"app": "other"}, active=1, ready=1),
+        # a second manager, and an alchemiscale Job without the manager label
+        make_job("othermgr.failed", OTHER, failed=1),
+        make_job("othermgr.succeeded", OTHER, succeeded=1),
+        make_job("unlabeled.failed", {"app": "alchemiscale-compute"}, failed=1),
+        # this manager
+        make_job(f"{MANAGER_NAME}.succeeded", OWN, succeeded=1),
+        make_job(f"{MANAGER_NAME}.running", OWN, active=1, ready=1),
     ]
 
-    batch = mock.MagicMock()
-
-    def list_namespaced_job(namespace, label_selector):
-        assert namespace == NAMESPACE
-        return SimpleNamespace(
-            items=[j for j in jobs if _matches(j.metadata.labels, label_selector)]
+    def list_namespaced_job(namespace, label_selector=None):
+        key, _, value = (label_selector or "").partition("=")
+        return client.V1JobList(
+            items=[
+                j
+                for j in jobs
+                if not key or (j.metadata.labels or {}).get(key) == value
+            ]
         )
 
+    def delete_namespaced_job(name, **kwargs):
+        batch.deleted.append(name)
+        jobs[:] = [j for j in jobs if j.metadata.name != name]
+
+    batch = mock.Mock()
     batch.list_namespaced_job.side_effect = list_namespaced_job
+    batch.delete_namespaced_job.side_effect = delete_namespaced_job
+    batch.deleted = []
+    core = mock.Mock()
+    core.list_namespaced_pod.return_value = client.V1PodList(items=[])
 
-    # failed Jobs are described before deletion; their pods are looked up
-    core = mock.MagicMock()
-    core.list_namespaced_pod.return_value = SimpleNamespace(items=[])
-
-    monkeypatch.setattr("kubernetes.config.load_config", mock.MagicMock())
-    monkeypatch.setattr("kubernetes.client.BatchV1Api", mock.MagicMock(return_value=batch))
-    monkeypatch.setattr("kubernetes.client.CoreV1Api", mock.MagicMock(return_value=core))
+    monkeypatch.setattr("kubernetes.config.load_config", mock.Mock())
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", mock.Mock(return_value=batch))
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", mock.Mock(return_value=core))
     return batch
 
 
-def _deleted(batch):
-    return {c.kwargs["name"] for c in batch.delete_namespaced_job.call_args_list}
-
-
-def _selectors(batch):
-    return {c.kwargs.get("label_selector") for c in batch.list_namespaced_job.call_args_list}
-
-
 @pytest.fixture
-def job_spec_path(tmp_path):
-    path = tmp_path / "job-spec.yaml"
-    path.write_text(
+def manager(k8s, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "alchemiscale.compute.manager.AlchemiscaleComputeManagerClient", mock.Mock()
+    )
+    # upstream __init__ adds a StreamHandler and sets the level; restore both
+    upstream_logger = logging.getLogger("AlchemiscaleComputeManager")
+    monkeypatch.setattr(upstream_logger, "handlers", list(upstream_logger.handlers))
+    monkeypatch.setattr(upstream_logger, "level", upstream_logger.level)
+
+    job_spec = tmp_path / "job-spec.yaml"
+    job_spec.write_text(
         yaml.safe_dump(
             {
-                "containers": [
-                    {
-                        "name": "compute",
-                        "image": "ghcr.io/openforcefield/alchemiscale-compute:latest",
-                        "args": ["compute", "synchronous"],
-                    }
-                ],
+                "containers": [{"name": "compute", "image": "img", "args": []}],
                 "volumes": [],
             }
         )
     )
-    return path
-
-
-@pytest.fixture
-def manager(job_spec_path):
     settings = K8SManagerSettings(
         name=MANAGER_NAME,
         logfile=None,
-        max_compute_services=2,
-        job_spec_path=job_spec_path,
+        max_compute_services=10,
+        job_spec_path=job_spec,
         namespace=NAMESPACE,
+        k8s_max_retries=0,
     )
     service_settings = ComputeServiceSettings(
-        api_url="http://127.0.0.1:8000",
-        identifier="myid",
-        key="akey",
-        name="unused",
-        shared_basedir="./shared",
-        scratch_basedir="./scratch",
+        api_url="http://localhost",
+        identifier="test",
+        key="test",
+        name="test",
+        shared_basedir=tmp_path / "shared",
+        scratch_basedir=tmp_path / "scratch",
     )
-    # avoid constructing a real alchemiscale client
-    with mock.patch("alchemiscale.compute.manager.AlchemiscaleComputeManagerClient"):
-        return K8SManager(settings, service_settings)
-
-
-def test_batch_api_passes_selector(k8s):
-    jobs = K8SBatchApi(NAMESPACE, MANAGER_NAME).get_jobs()
-    k8s.list_namespaced_job.assert_called_once_with(
-        namespace=NAMESPACE, label_selector=SELECTOR
-    )
-    assert {j.metadata.name for j in jobs} == {
-        f"{MANAGER_NAME}.succeeded",
-        f"{MANAGER_NAME}.running",
-    }
-
-
-def test_manager_batch_api_scoped_to_manager_name(manager):
-    assert manager.batch_api.label_selector == SELECTOR
-    assert manager.batch_api.namespace == NAMESPACE
+    return K8SManager(settings, service_settings)
 
 
 def test_new_job_carries_manager_label(manager):
     job = manager._new_job()
-    assert isinstance(job, client.V1Job)
-    assert job.metadata.labels[MANAGER_LABEL_KEY] == MANAGER_NAME
-    assert job.metadata.labels["app"] == "alchemiscale-compute"
-    assert job.spec.template.metadata.labels[MANAGER_LABEL_KEY] == MANAGER_NAME
-    assert job.spec.template.metadata.labels["app"] == "alchemiscale-compute"
-    # the Job the manager creates is one its own selector matches
-    assert _matches(job.metadata.labels, manager.batch_api.label_selector)
+    assert job.metadata.labels == OWN
+    assert job.spec.template.metadata.labels == OWN
 
 
 def test_manager_ignores_foreign_jobs(k8s, manager):
-    """Foreign Jobs in the namespace (failed, succeeded, pending, or ready but
-    unregistered) neither crash the manager, nor get deleted, nor block or
-    get flagged."""
-    server_job_names = {f"{MANAGER_NAME}.running"}
+    """Foreign Jobs (failed, succeeded, pending, or ready but unregistered)
+    are not counted, deleted, flagged, or allowed to block Job creation."""
+    data = {"compute_service_ids": [f"{MANAGER_NAME}.running-abc"]}
+    # twice: a ready unregistered Job is only flagged on the second pass
+    assert manager.create_compute_services(data, 1) == 1
+    assert manager.create_compute_services(data, 1) == 1
 
-    # foreign, other-manager and unlabeled failed Jobs are neither deleted nor counted
-    assert manager.handle_failed_jobs() == {}
     assert manager.consecutive_failed_cycles == 0
-
-    # foreign ready Jobs aren't flagged as unregistered, even on a second pass
-    watchlist = []
-    manager.batch_api.verify_running_jobs(server_job_names, watchlist)
-    manager.batch_api.verify_running_jobs(server_job_names, watchlist)
-    assert watchlist == []
-
-    # only this manager's successful Job is deleted
-    manager.batch_api.clear_successful_jobs()
-    assert _deleted(k8s) == {f"{MANAGER_NAME}.succeeded"}
-
-    # foreign pending Jobs don't block creation of compute services
-    assert manager.batch_api.jobs_pending() is False
-
-    assert _selectors(k8s) == {SELECTOR}
+    assert k8s.deleted == [f"{MANAGER_NAME}.succeeded"]
 
 
 def test_cli_clear_jobs_scoped_to_manager(k8s):
     result = CliRunner().invoke(
-        cli,
-        ["k8s", "clear-jobs", "--namespace", NAMESPACE, "--manager-name", "othermgr"],
+        cli, ["k8s", "clear-jobs", "-n", NAMESPACE, "-m", "othermgr"]
     )
     assert result.exit_code == 0, result.output
-    assert _selectors(k8s) == {f"{MANAGER_LABEL_KEY}=othermgr"}
-    assert _deleted(k8s) == {"othermgr.failed"}
+    assert k8s.deleted == ["othermgr.failed"]

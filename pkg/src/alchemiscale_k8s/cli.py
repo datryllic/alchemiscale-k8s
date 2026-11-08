@@ -94,7 +94,7 @@ def k8s():
     "namespace",
     type=str,
     required=True,
-    default=None,
+    help="Namespace the manager's Jobs run in.",
 )
 @click.option(
     "-m",
