@@ -101,6 +101,8 @@ Otherwise Kubernetes may delete failed Jobs before the manager logs them; the ma
 If compute services were previously managed manually using a `Deployment`, as demonstrated in the `/deployment/` directory, that `Deployment`'s `template` goes under `spec.template` here.
 The values here determine the version of the `alchemiscale-compute` image to use, the resources needed by the container, the volumes created for the pod, and where the pods are scheduled.
 
+The image tags in these examples are placeholders (`vX.Y.Z`); use the `alchemiscale-compute` image matching the version of the `alchemiscale` server you connect to.
+
 Note here that the `alchemiscale-compute-settings-yaml` volume comes from `alchemiscale-compute-settings-yaml` secret.
 This secret must exist prior to running the compute manager (see `/compute/secrets.sh`).
 
@@ -117,7 +119,7 @@ spec:
     spec:
       containers:
         - name: alchemiscale-synchronous-container
-          image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+          image: ghcr.io/openfreeenergy/alchemiscale-compute:vX.Y.Z
           args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
           resources:
             limits:
@@ -191,7 +193,7 @@ spec:
         value: alchemiscale
       containers:
         - name: alchemiscale-synchronous-container
-          image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+          image: ghcr.io/openfreeenergy/alchemiscale-compute:vX.Y.Z
           args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
           resources:
             limits:
