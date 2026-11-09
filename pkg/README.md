@@ -72,7 +72,7 @@ If this value is `null` then log outputs are directed to `stderr`.
 `sleep_interval` defines the number of seconds until the manager requests a new instruction from the compute API.
 This is currently the maximum rate the manager can create services.
 
-`job_spec_path` defines the path to a yaml file providing container and volume structures used by the Kubernetes API.
+`job_spec_path` defines the path to a yaml file with the Job template (a Job manifest without its name) used for each compute service Job.
 The structure of this file is discussed below.
 
 `namespace` is the Kubernetes namespace to be used by the compute manager.
@@ -85,41 +85,135 @@ Reading pod termination reasons for the logs requires `list` on `pods` in the na
 
 ### Job specification configuration
 
-The definition of containers and volumes to be used for a compute service is contained in the job specification.
-If compute services were previously managed manually using a `Deployment`, as demonstrated in the `/deployment/` directory, this is the `template` spec of the compute service configuration.
-The values here determine the version of the `alchemiscale-compute` image to use, the resources needed by the container, and volumes created created for the pod.
+The job specification is a template for the compute service Jobs: an ordinary Kubernetes [Job](https://kubernetes.io/docs/concepts/workloads/controllers/job/) manifest, without the Job's name.
+It has the same shape as a CronJob's `jobTemplate`:
+
+- `apiVersion: batch/v1` and `kind: Job` (optional): accepted so that a Job written for `kubectl` can be reused, once everything under `metadata` other than `labels` and `annotations` is removed.
+- `metadata` (optional): `labels` and `annotations` for the Job.
+- `spec`: any [JobSpec](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/job-v1/#JobSpec) field, such as `activeDeadlineSeconds` and `ttlSecondsAfterFinished`, plus the pod template:
+  - `spec.template.metadata` (optional): `labels` and `annotations` for the pods.
+  - `spec.template.spec`: any [PodSpec](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#PodSpec) field, such as `containers`, `volumes`, `affinity`, `nodeSelector`, `tolerations`, `imagePullSecrets`, `priorityClassName`, `securityContext` and `initContainers`.
+    The first container must be the `alchemiscale-compute` container, and must set `args`.
+
+If you set `ttlSecondsAfterFinished`, keep it longer than the manager's `sleep_interval`.
+Otherwise Kubernetes may delete failed Jobs before the manager logs them; the manager warns at startup if it is shorter.
+
+If compute services were previously managed manually using a `Deployment`, as demonstrated in the `/deployment/` directory, that `Deployment`'s `template` goes under `spec.template` here.
+The values here determine the version of the `alchemiscale-compute` image to use, the resources needed by the container, the volumes created for the pod, and where the pods are scheduled.
 
 Note here that the `alchemiscale-compute-settings-yaml` volume comes from `alchemiscale-compute-settings-yaml` secret.
 This secret must exist prior to running the compute manager (see `/compute/secrets.sh`).
 
 ```yaml
 # ./config/job-spec.yaml
-containers:
-- name: alchemiscale-synchronous-container
-  image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
-  args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
-  resources:
-    limits:
-      cpu: 2
-      memory: 12Gi
-      ephemeral-storage: 48Gi
-      nvidia.com/gpu: 1
-    requests:
-      cpu: 2
-      memory: 12Gi
-      ephemeral-storage: 48Gi
-  volumeMounts:
-    - name: alchemiscale-compute-settings-yaml
-      mountPath: "/mnt/settings"
-      readOnly: true
-  env:
-    # keep in step with the container CPU limit to avoid CFS throttling
-    - name: OPENMM_CPU_THREADS
-      value: "2"
-volumes:
-  - name: alchemiscale-compute-settings-yaml
-    secret:
-      secretName: alchemiscale-compute-settings-yaml
+apiVersion: batch/v1
+kind: Job
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        team: free-energy
+    spec:
+      containers:
+        - name: alchemiscale-synchronous-container
+          image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+          args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
+          resources:
+            limits:
+              cpu: 2
+              memory: 12Gi
+              ephemeral-storage: 48Gi
+              nvidia.com/gpu: 1
+            requests:
+              cpu: 2
+              memory: 12Gi
+              ephemeral-storage: 48Gi
+          volumeMounts:
+            - name: alchemiscale-compute-settings-yaml
+              mountPath: "/mnt/settings"
+              readOnly: true
+          env:
+            - name: OPENMM_CPU_THREADS
+              value: "2"
+      volumes:
+        - name: alchemiscale-compute-settings-yaml
+          secret:
+            secretName: alchemiscale-compute-settings-yaml
+```
+
+The manager owns a few values and sets them on every Job:
+
+- `spec.backoffLimit: 0`, `spec.parallelism: 1`, `spec.completions: 1`, `spec.suspend: false` and `spec.template.spec.restartPolicy: Never`: each Job runs exactly one pod, which runs one compute service, and a failed pod fails its Job.
+- The `app: alchemiscale-compute` and `k8s.alchemiscale.org/compute-manager: <name>` labels, on both the Job and its pods.
+- The Job's `name` and `namespace`.
+- `--name <job name>` and `--compute-manager-id <id>`, appended to the first container's `args`.
+
+You may set a manager-owned field only to the manager's own value.
+Any other value (e.g. `restartPolicy: OnFailure`, `backoffLimit: 3`, a different `app` label, or `--name` in the container args) is an error.
+So are `spec.selector`, `spec.manualSelector`, `spec.backoffLimitPerIndex` and `spec.maxFailedIndexes`, and any key other than `labels` and `annotations` under either `metadata`.
+The manager checks the job specification when it starts, and refuses to start if it is invalid, including values of the wrong type (e.g. an env var `value: 2`, which must be quoted as `"2"`).
+It logs a warning for any field the installed `kubernetes` client does not recognize, which is usually a typo.
+Such fields are still passed through to Kubernetes, in case your cluster is newer than the client.
+
+#### Example: choosing a GPU model on NRP
+
+On the [National Research Platform](https://nrp.ai/) (NRP), the GPU model is chosen with a node affinity on the `nvidia.com/gpu.product` node label.
+Tainted nodes, such as nodes reserved for a group, also need a matching toleration.
+A toleration only allows the pods onto those nodes; use an affinity or `nodeSelector` to require them.
+Adjust the GPU models and the toleration to your cluster.
+
+```yaml
+# ./config/job-spec.yaml (NRP)
+apiVersion: batch/v1
+kind: Job
+spec:
+  activeDeadlineSeconds: 604800
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A10
+                - NVIDIA-GeForce-RTX-3090
+      # allow pods onto nodes tainted `nautilus.io/reservation=alchemiscale`
+      # (any effect); placeholder: replace with your reservation's taint, as
+      # listed by `kubectl describe node <node>`
+      tolerations:
+      - key: nautilus.io/reservation
+        operator: Equal
+        value: alchemiscale
+      containers:
+        - name: alchemiscale-synchronous-container
+          image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+          args: ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"]
+          resources:
+            limits:
+              cpu: 2
+              memory: 12Gi
+              ephemeral-storage: 48Gi
+              nvidia.com/gpu: 1
+            requests:
+              cpu: 2
+              memory: 12Gi
+              ephemeral-storage: 48Gi
+          volumeMounts:
+            - name: alchemiscale-compute-settings-yaml
+              mountPath: "/mnt/settings"
+              readOnly: true
+          env:
+            - name: OPENMM_CPU_THREADS
+              value: "2"
+      volumes:
+        - name: alchemiscale-compute-settings-yaml
+          secret:
+            secretName: alchemiscale-compute-settings-yaml
 ```
 
 ### `ComputeServiceSettings` configuration

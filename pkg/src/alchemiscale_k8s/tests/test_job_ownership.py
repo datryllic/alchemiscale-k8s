@@ -90,8 +90,15 @@ def manager(k8s, tmp_path, monkeypatch):
     job_spec.write_text(
         yaml.safe_dump(
             {
-                "containers": [{"name": "compute", "image": "img", "args": []}],
-                "volumes": [],
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {"name": "compute", "image": "img", "args": []}
+                            ]
+                        }
+                    }
+                }
             }
         )
     )
@@ -116,8 +123,8 @@ def manager(k8s, tmp_path, monkeypatch):
 
 def test_new_job_carries_manager_label(manager):
     job = manager._new_job()
-    assert job.metadata.labels == OWN
-    assert job.spec.template.metadata.labels == OWN
+    assert job["metadata"]["labels"] == OWN
+    assert job["spec"]["template"]["metadata"]["labels"] == OWN
 
 
 def test_manager_ignores_foreign_jobs(k8s, manager):

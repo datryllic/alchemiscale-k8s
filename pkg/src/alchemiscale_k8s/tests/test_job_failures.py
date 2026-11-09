@@ -128,8 +128,15 @@ def make_manager(cluster, tmp_path, monkeypatch):
     job_spec.write_text(
         yaml.safe_dump(
             {
-                "containers": [{"name": "compute", "image": "img", "args": []}],
-                "volumes": [],
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {"name": "compute", "image": "img", "args": []}
+                            ]
+                        }
+                    }
+                }
             }
         )
     )

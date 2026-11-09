@@ -1,5 +1,5 @@
-# Container and volume definitions for the compute service Jobs created by
-# the alchemiscale-k8s compute manager.
+# Job template for the compute service Jobs created by the alchemiscale-k8s
+# compute manager; see the job specification section of pkg/README.md.
 # Deployed in a ConfigMap together with manager-settings.yaml:
 # `bash compute/manager-configmap.sh`.
 #
@@ -7,28 +7,34 @@
 # `alchemiscale-compute-settings-yaml` Secret that the manager itself mounts
 # (see secrets.sh). The manager appends `--name` and `--compute-manager-id`
 # to the first container's args.
-containers:
-- name: alchemiscale-synchronous-container
-  image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
-  args: ["compute", "synchronous", "-c", "/mnt/settings/synchronous-compute-settings.yaml"]
-  resources:
-    limits:
-      cpu: 2
-      memory: 12Gi
-      ephemeral-storage: 48Gi
-      nvidia.com/gpu: 1
-    requests:
-      cpu: 2
-      memory: 12Gi
-      ephemeral-storage: 48Gi
-  volumeMounts:
-    - name: alchemiscale-compute-settings-yaml
-      mountPath: "/mnt/settings"
-      readOnly: true
-  env:
-    - name: OPENMM_CPU_THREADS
-      value: "4"
-volumes:
-  - name: alchemiscale-compute-settings-yaml
-    secret:
-      secretName: alchemiscale-compute-settings-yaml
+apiVersion: batch/v1
+kind: Job
+spec:
+  template:
+    spec:
+      containers:
+      - name: alchemiscale-synchronous-container
+        image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
+        args: ["compute", "synchronous", "-c", "/mnt/settings/synchronous-compute-settings.yaml"]
+        resources:
+          limits:
+            cpu: 2
+            memory: 12Gi
+            ephemeral-storage: 48Gi
+            nvidia.com/gpu: 1
+          requests:
+            cpu: 2
+            memory: 12Gi
+            ephemeral-storage: 48Gi
+        volumeMounts:
+          - name: alchemiscale-compute-settings-yaml
+            mountPath: "/mnt/settings"
+            readOnly: true
+        env:
+          # keep in step with the container CPU limit to avoid CFS throttling
+          - name: OPENMM_CPU_THREADS
+            value: "2"
+      volumes:
+        - name: alchemiscale-compute-settings-yaml
+          secret:
+            secretName: alchemiscale-compute-settings-yaml

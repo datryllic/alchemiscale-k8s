@@ -1,7 +1,6 @@
 from uuid import uuid4
 from time import sleep
 from functools import wraps
-from copy import deepcopy
 import time
 import random
 
@@ -16,6 +15,8 @@ from alchemiscale.compute.manager import (
 from kubernetes import client, config
 from kubernetes.utils import create_from_dict
 from kubernetes.client.exceptions import ApiException
+
+from alchemiscale_k8s.job_spec import build_job, load_job_spec, validate_job
 
 
 # label applied to every Job (and its pods) created by a K8SManager; its value
@@ -220,8 +221,11 @@ class K8SBatchApi:
 
     @_retry
     @_create_client
-    def submit_job(self, job):
-        """Submit a job to Kubernetes."""
+    def submit_job(self, job: dict):
+        """Submit a job to Kubernetes.
+
+        ``job`` is a camelCase Job body, as built by ``K8SManager._new_job``.
+        """
         try:
             self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
         except Exception as e:
@@ -241,12 +245,22 @@ class K8SManager(ComputeManager):
         )
 
         with open(self.settings.job_spec_path, "r") as job_spec_file:
-            self.job_spec = yaml.safe_load(job_spec_file)
+            self.job_spec = load_job_spec(yaml.safe_load(job_spec_file))
+        # fail fast on a bad job spec, rather than on the first submission
+        for warning in validate_job(self._new_job()):
+            self.logger.warning(f"Job spec: {warning}")
+        ttl = self.job_spec["spec"].get("ttlSecondsAfterFinished")
+        if ttl is not None and ttl < self.settings.sleep_interval:
+            self.logger.warning(
+                f"Job spec: ttlSecondsAfterFinished ({ttl}) is shorter than "
+                f"sleep_interval ({self.settings.sleep_interval}); Kubernetes may "
+                "delete failed Jobs before the manager sees and logs them"
+            )
         self.watchlist = []
         self.consecutive_failed_cycles = 0
 
     def create_compute_services(self, data, target):
-        """Submit up to ``target`` k8s Jobs after running our health checks.
+        """Submit up to ``target`` k8s Jobs after handling existing Jobs.
 
         ``target`` is the per-cycle sizing decision computed by
         :meth:`alchemiscale.compute.manager.ComputeManager._compute_jobs_to_create`,
@@ -272,7 +286,7 @@ class K8SManager(ComputeManager):
         for _ in range(target):
             job = self._new_job()
             self.batch_api.submit_job(job)
-            self.logger.info(f"Created Job: {job.metadata.name}")
+            self.logger.info(f"Created Job: {job['metadata']['name']}")
         return target
 
     def handle_failed_jobs(self) -> dict[str, str]:
@@ -296,38 +310,36 @@ class K8SManager(ComputeManager):
             )
         return failed
 
-    def _new_job(self):
+    def _job_labels(self) -> dict[str, str]:
+        """Labels the manager sets on every Job and its pod template.
+
+        These are manager-owned: a job spec that sets one of these keys to a
+        different value is rejected.
+        """
+        return {
+            "app": "alchemiscale-compute",
+            MANAGER_LABEL_KEY: self.settings.name,
+        }
+
+    def _job_args(self, jobname: str) -> list[str]:
+        """Args the manager appends to the first container of every Job."""
+        return [
+            "--name",
+            jobname,
+            "--compute-manager-id",
+            str(self.compute_manager_id),
+        ]
+
+    def _new_job(self) -> dict:
+        """Render a new Job body from the job spec, as a camelCase dict.
+
+        The dict is submitted as-is via ``create_namespaced_job``.
+        """
         jobname = f"{self.settings.name}.{uuid4().hex}"
-
-        job_spec = deepcopy(self.job_spec)
-        volumes = job_spec["volumes"]
-        containers = job_spec["containers"]
-
-        # inject the job name at the command line
-        containers[0]["args"].extend(["--name", jobname])
-        containers[0]["args"].extend(
-            ["--compute-manager-id", str(self.compute_manager_id)]
+        return build_job(
+            self.job_spec,
+            name=jobname,
+            namespace=self.settings.namespace,
+            labels=self._job_labels(),
+            extra_args=self._job_args(jobname),
         )
-
-        labels = {"app": "alchemiscale-compute", MANAGER_LABEL_KEY: self.settings.name}
-        template = client.V1PodTemplateSpec(
-            metadata=client.V1ObjectMeta(labels=labels),
-            spec=client.V1PodSpec(
-                restart_policy="Never", containers=containers, volumes=volumes
-            ),
-        )
-        spec = client.V1JobSpec(
-            template=template,
-            backoff_limit=0,
-        )
-        job = client.V1Job(
-            api_version="batch/v1",
-            kind="Job",
-            metadata=client.V1ObjectMeta(
-                name=jobname,
-                namespace=self.settings.namespace,
-                labels=labels,
-            ),
-            spec=spec,
-        )
-        return job
