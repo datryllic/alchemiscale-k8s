@@ -15,7 +15,7 @@ To deploy `alchemiscale` to a k8s cluster, from within the `deployment/` directo
 
 1. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
 
-2. Set your desired secrets for the server components in [server/secrets.sh](server/secrets.sh).
+2. Set your desired secrets for the server components in [server/secrets.sh](deployment/server/secrets.sh).
    Take note of the recommendations in the comments guiding you on the choices.
    Deploy: `bash server/secrets.sh`.
 
@@ -30,9 +30,9 @@ To deploy `alchemiscale` to a k8s cluster, from within the `deployment/` directo
 7. Follow [instructions for creating user and compute identities](https://docs.alchemiscale.org/en/latest/operations.html#add-users); use `kubectl exec` instead of `docker run` for these calls.
 You will need at least one user identity and one compute identity with permissions on at least one ``Scope`` to make use of ``alchemiscale``.
 
-8. Set your desired settings for the compute services in [compute/synchronous-compute-settings.yaml](compute/synchronous-compute-settings.yaml).
+8. Set your desired settings for the compute services in [compute/synchronous-compute-settings.yaml](deployment/compute/synchronous-compute-settings.yaml).
    Deploy these as a secret: `bash compute/secrets.sh`.
    Refer to the [alchemiscale compute documentation](https://docs.alchemiscale.org/en/latest/compute.html#kubernetes-cluster) for more details.
 
-9. Set desired number of replicas in [compute/compute-services.yaml](compute/compute-services.yaml).
+9. Set desired number of replicas in [compute/compute-services.yaml](deployment/compute/compute-services.yaml).
    Deploy compute services: `kubectl apply -f compute/compute-services.yaml`
