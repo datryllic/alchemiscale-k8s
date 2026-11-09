@@ -157,6 +157,7 @@ Such fields are still passed through to Kubernetes, in case your cluster is newe
 
 On the [National Research Platform](https://nrp.ai/) (NRP), the GPU model is chosen with a node affinity on the `nvidia.com/gpu.product` node label.
 Tainted nodes, such as nodes reserved for a group, also need a matching toleration.
+A toleration only allows the pods onto those nodes; use an affinity or `nodeSelector` to require them.
 Adjust the GPU models and the toleration to your cluster.
 
 ```yaml
@@ -178,6 +179,8 @@ spec:
                 values:
                 - NVIDIA-A10
                 - NVIDIA-GeForce-RTX-3090
+      # placeholder: replace with your reservation's taint; list a node's
+      # taints with `kubectl describe node <node>`
       tolerations:
       - key: nautilus.io/reservation
         operator: Equal
