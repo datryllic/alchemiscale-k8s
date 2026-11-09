@@ -72,7 +72,7 @@ If this value is `null` then log outputs are directed to `stderr`.
 `sleep_interval` defines the number of seconds until the manager requests a new instruction from the compute API.
 This is currently the maximum rate the manager can create services.
 
-`job_spec_path` defines the path to a yaml file providing the pod template (and optional Job-level settings) used for each compute service Job.
+`job_spec_path` defines the path to a yaml file with the Job template (a Job manifest without its name) used for each compute service Job.
 The structure of this file is discussed below.
 
 `namespace` is the Kubernetes namespace to be used by the compute manager.
@@ -88,12 +88,15 @@ Reading pod termination reasons for the logs requires `list` on `pods` in the na
 The job specification is a template for the compute service Jobs: an ordinary Kubernetes [Job](https://kubernetes.io/docs/concepts/workloads/controllers/job/) manifest, without the Job's name.
 It has the same shape as a CronJob's `jobTemplate`:
 
-- `apiVersion: batch/v1` and `kind: Job` (optional): accepted so that a Job written for `kubectl` can be used as-is.
+- `apiVersion: batch/v1` and `kind: Job` (optional): accepted so that a Job written for `kubectl` can be reused, once everything under `metadata` other than `labels` and `annotations` is removed.
 - `metadata` (optional): `labels` and `annotations` for the Job.
 - `spec`: any [JobSpec](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/job-v1/#JobSpec) field, such as `activeDeadlineSeconds` and `ttlSecondsAfterFinished`, plus the pod template:
   - `spec.template.metadata` (optional): `labels` and `annotations` for the pods.
   - `spec.template.spec`: any [PodSpec](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#PodSpec) field, such as `containers`, `volumes`, `affinity`, `nodeSelector`, `tolerations`, `imagePullSecrets`, `priorityClassName`, `securityContext` and `initContainers`.
     The first container must be the `alchemiscale-compute` container, and must set `args`.
+
+If you set `ttlSecondsAfterFinished`, keep it longer than the manager's `sleep_interval`.
+Otherwise Kubernetes may delete failed Jobs before the manager logs them; the manager warns at startup if it is shorter.
 
 If compute services were previously managed manually using a `Deployment`, as demonstrated in the `/deployment/` directory, that `Deployment`'s `template` goes under `spec.template` here.
 The values here determine the version of the `alchemiscale-compute` image to use, the resources needed by the container, the volumes created for the pod, and where the pods are scheduled.
@@ -148,8 +151,8 @@ The manager owns a few values and sets them on every Job:
 
 You may set a manager-owned field only to the manager's own value.
 Any other value (e.g. `restartPolicy: OnFailure`, `backoffLimit: 3`, a different `app` label, or `--name` in the container args) is an error.
-So are `spec.selector` and `spec.manualSelector`, and `name` or `namespace` under either `metadata`.
-The manager checks the job specification when it starts, and refuses to start if it is invalid.
+So are `spec.selector`, `spec.manualSelector`, `spec.backoffLimitPerIndex` and `spec.maxFailedIndexes`, and any key other than `labels` and `annotations` under either `metadata`.
+The manager checks the job specification when it starts, and refuses to start if it is invalid, including values of the wrong type (e.g. an env var `value: 2`, which must be quoted as `"2"`).
 It logs a warning for any field the installed `kubernetes` client does not recognize, which is usually a typo.
 Such fields are still passed through to Kubernetes, in case your cluster is newer than the client.
 

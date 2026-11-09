@@ -16,7 +16,7 @@ from kubernetes import client, config
 from kubernetes.utils import create_from_dict
 from kubernetes.client.exceptions import ApiException
 
-from alchemiscale_k8s.job_spec import build_job, load_job_spec, validate_job_spec
+from alchemiscale_k8s.job_spec import build_job, load_job_spec, validate_job
 
 
 # label applied to every Job (and its pods) created by a K8SManager; its value
@@ -247,18 +247,20 @@ class K8SManager(ComputeManager):
         with open(self.settings.job_spec_path, "r") as job_spec_file:
             self.job_spec = load_job_spec(yaml.safe_load(job_spec_file))
         # fail fast on a bad job spec, rather than on the first submission
-        for warning in validate_job_spec(
-            self.job_spec,
-            self.settings.namespace,
-            self._job_labels(),
-            self._job_args("validation"),
-        ):
+        for warning in validate_job(self._new_job()):
             self.logger.warning(f"Job spec: {warning}")
+        ttl = self.job_spec["spec"].get("ttlSecondsAfterFinished")
+        if ttl is not None and ttl < self.settings.sleep_interval:
+            self.logger.warning(
+                f"Job spec: ttlSecondsAfterFinished ({ttl}) is shorter than "
+                f"sleep_interval ({self.settings.sleep_interval}); Kubernetes may "
+                "delete failed Jobs before the manager sees and logs them"
+            )
         self.watchlist = []
         self.consecutive_failed_cycles = 0
 
     def create_compute_services(self, data, target):
-        """Submit up to ``target`` k8s Jobs after running our health checks.
+        """Submit up to ``target`` k8s Jobs after handling existing Jobs.
 
         ``target`` is the per-cycle sizing decision computed by
         :meth:`alchemiscale.compute.manager.ComputeManager._compute_jobs_to_create`,

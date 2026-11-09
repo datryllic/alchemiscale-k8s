@@ -21,8 +21,9 @@ name::
           affinity: {...}
 
 This is the shape of Kubernetes' ``JobTemplateSpec`` (a CronJob's
-``jobTemplate``), so a Job written for ``kubectl`` can be used as-is once
-its name is removed.
+``jobTemplate``), so a Job written for ``kubectl`` can be adapted by
+removing everything under ``metadata`` other than ``labels`` and
+``annotations``.
 
 The manager owns a few values and overlays them on every Job (see
 :func:`build_job`). A user value for a manager-owned field is accepted only
@@ -32,8 +33,8 @@ operator explicitly asked for, and honoring them would break the manager.
 
 The Job body is built as a plain camelCase ``dict`` and submitted as-is, so
 fields unknown to the installed ``kubernetes`` client (e.g. newer than it)
-still reach the API server. :func:`validate_job_spec` checks the rendered
-body against the client's models at startup.
+still reach the API server. :func:`validate_job` checks a rendered body
+against the client's models; the manager runs it at startup.
 """
 
 import re
@@ -61,10 +62,14 @@ JOB_SPEC_OWNED = {
     # a suspended Job never runs, and is never seen as pending
     "suspend": False,
 }
-# JobSpec fields the user may not set at all
-JOB_SPEC_FORBIDDEN = {"selector", "manualSelector"}
-# args the manager appends to the first container
-MANAGER_ARGS = ("--name", "--compute-manager-id")
+# JobSpec fields the user may not set at all: the manager relies on the
+# selector Kubernetes generates, and on a failed pod failing its Job
+JOB_SPEC_FORBIDDEN = {
+    "selector",
+    "manualSelector",
+    "backoffLimitPerIndex",
+    "maxFailedIndexes",
+}
 
 
 def load_job_spec(raw) -> dict:
@@ -115,8 +120,8 @@ def load_job_spec(raw) -> dict:
         raise JobSpecError(f"`{where}[0]` must be a mapping")
     if not isinstance(containers[0].get("args"), list):
         raise JobSpecError(
-            f"`{where}[0].args` must be a list; the manager appends "
-            f"{' and '.join(MANAGER_ARGS)} to it"
+            f"`{where}[0].args` must be a list; the manager appends its own "
+            "args to it"
         )
 
     return spec
@@ -136,7 +141,7 @@ def _check_metadata(value, where: str) -> dict:
     if unknown:
         raise JobSpecError(
             f"`{where}` may only set {sorted(_METADATA_KEYS)}, "
-            f"got {sorted(unknown)}; names and namespaces are set by the manager"
+            f"got {sorted(unknown)}; the manager sets the name and namespace"
         )
     for key in _METADATA_KEYS:
         _check_mapping(value.get(key), f"{where}.{key}")
@@ -172,7 +177,8 @@ def build_job(
     labels
         Manager-owned labels, applied to both the Job and its pod template.
     extra_args
-        Args appended to the first container's args.
+        Args appended to the first container's args. Flags among them
+        (``--...``) may not already be in the job spec's args.
 
     Returns
     -------
@@ -188,16 +194,16 @@ def build_job(
     forbidden = JOB_SPEC_FORBIDDEN & spec.keys()
     if forbidden:
         raise JobSpecError(
-            f"`spec` may not set {sorted(forbidden)}; the manager relies on "
-            "the selector Kubernetes generates"
+            f"`spec` may not set {sorted(forbidden)}"
         )
     _overlay_owned(spec, JOB_SPEC_OWNED, "spec")
     _overlay_owned(pod_spec, POD_SPEC_OWNED, "spec.template.spec")
 
     args = pod_spec["containers"][0]["args"]
+    flags = [a for a in extra_args if a.startswith("--")]
     for arg in args:
         if isinstance(arg, str) and any(
-            arg == flag or arg.startswith(flag + "=") for flag in MANAGER_ARGS
+            arg == flag or arg.startswith(flag + "=") for flag in flags
         ):
             raise JobSpecError(
                 f"`spec.template.spec.containers[0].args` may not contain "
@@ -216,31 +222,27 @@ def build_job(
     return {**_TOP_LEVEL, "metadata": job_meta, "spec": spec}
 
 
-def validate_job_spec(
-    job_spec: dict,
-    namespace: str,
-    labels: dict[str, str],
-    extra_args: list[str],
-) -> list[str]:
-    """Render a sample Job and check it against the client's models.
+def validate_job(body: dict) -> list[str]:
+    """Check a Job body from :func:`build_job` against the client's models.
 
-    Raises :class:`JobSpecError` for conflicts with manager-owned values,
-    structurally wrong values (e.g. a mapping where a list is expected) and
+    Raises :class:`JobSpecError` for values of the wrong shape or type (e.g.
+    a mapping where a list is expected, or an int where a string is) and for
     anything the ``kubernetes`` client's models reject (e.g. a container
-    without a ``name``).
+    without a ``name``). Kubernetes does not coerce types, so these would
+    fail on every submission.
 
     Returns a list of warnings for fields the installed client does not
     know. These are submitted as-is, since they may be valid on a newer
     cluster, but are most often typos that Kubernetes will drop.
     """
-    body = build_job(job_spec, "validation", namespace, labels, extra_args)
-
     problems = []
     _walk(body, "V1Job", "", problems)
     errors = [msg for kind, msg in problems if kind == "error"]
     if errors:
         raise JobSpecError("invalid job spec: " + "; ".join(errors))
 
+    # _walk checks shapes and types; deserializing also checks required
+    # fields. ``__deserialize`` is private to ApiClient, but long stable.
     try:
         client.ApiClient()._ApiClient__deserialize(body, "V1Job")
     except (ValueError, TypeError) as e:
@@ -251,10 +253,19 @@ def validate_job_spec(
 
 _LIST_RE = re.compile(r"^list\[(.+)\]$")
 _DICT_RE = re.compile(r"^dict[\[(]([^,]+),\s*(.+)[\])]$")
+_PRIMITIVES = {"str": (str,), "int": (int,), "bool": (bool,), "float": (int, float)}
+# resource quantities are typed ``str``, but YAML numbers (``cpu: 2``) are fine
+_QUANTITY_MAPS = {"limits", "requests", "overhead"}
 
 
-def _walk(data, type_name: str, path: str, problems: list) -> None:
-    """Check ``data`` against kubernetes client model ``type_name``."""
+def _walk(
+    data, type_name: str, path: str, problems: list, key: str = "", parent: str = ""
+) -> None:
+    """Check ``data`` against kubernetes client model ``type_name``.
+
+    ``key`` is the field or map key ``data`` sits under, and ``parent`` the
+    key of the map containing it, if any; they identify resource quantities.
+    """
     if data is None:
         return
 
@@ -264,7 +275,7 @@ def _walk(data, type_name: str, path: str, problems: list) -> None:
             problems.append(("error", f"`{path}` must be a list"))
             return
         for i, item in enumerate(data):
-            _walk(item, m.group(1), f"{path}[{i}]", problems)
+            _walk(item, m.group(1), f"{path}[{i}]", problems, key, parent)
         return
 
     m = _DICT_RE.match(type_name)
@@ -272,8 +283,17 @@ def _walk(data, type_name: str, path: str, problems: list) -> None:
         if not isinstance(data, dict):
             problems.append(("error", f"`{path}` must be a mapping"))
             return
-        for key, value in data.items():
-            _walk(value, m.group(2), f"{path}.{key}", problems)
+        for k, value in data.items():
+            _walk(value, m.group(2), f"{path}.{k}", problems, k, key)
+        return
+
+    if type_name in _PRIMITIVES:
+        ok = _PRIMITIVES[type_name]
+        if type_name == "str" and (key == "sizeLimit" or parent in _QUANTITY_MAPS):
+            ok = (str, int, float)
+        # bool is a subclass of int, but never valid where an int is expected
+        if not isinstance(data, ok) or (isinstance(data, bool) and bool not in ok):
+            problems.append(("error", f"`{path}` must be {type_name}, got {data!r}"))
         return
 
     klass = getattr(client.models, type_name, None)
@@ -297,4 +317,4 @@ def _walk(data, type_name: str, path: str, problems: list) -> None:
                 )
             )
             continue
-        _walk(value, klass.openapi_types[attrs[key]], sub_path, problems)
+        _walk(value, klass.openapi_types[attrs[key]], sub_path, problems, key)

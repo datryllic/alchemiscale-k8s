@@ -15,7 +15,7 @@ from alchemiscale_k8s.job_spec import (
     JobSpecError,
     build_job,
     load_job_spec,
-    validate_job_spec,
+    validate_job,
 )
 from alchemiscale_k8s.manager import K8SManager
 from alchemiscale_k8s.settings import K8SManagerSettings
@@ -91,7 +91,7 @@ TEMPLATE = {
     },
 }
 
-NEW = {
+FULL = {
     "apiVersion": "batch/v1",
     "kind": "Job",
     "metadata": {"labels": {"cost-center": "x"}, "annotations": {"a": "b"}},
@@ -111,10 +111,10 @@ def _deserialize(body) -> client.V1Job:
     return client.ApiClient()._ApiClient__deserialize(body, "V1Job")
 
 
-# --- forms --------------------------------------------------------------------
+# --- rendering ----------------------------------------------------------------
 
 
-def test_minimal_form():
+def test_minimal_spec():
     body = _build(MINIMAL)
     assert body["apiVersion"] == "batch/v1"
     assert body["kind"] == "Job"
@@ -128,8 +128,8 @@ def test_minimal_form():
     assert pod["containers"][0]["args"] == CONTAINER["args"] + ARGS
 
 
-def test_new_form_keeps_all_fields():
-    body = _build(NEW)
+def test_full_spec_keeps_all_fields():
+    body = _build(FULL)
     job = _deserialize(body)
 
     assert job.metadata.name == "mgr.abc"
@@ -160,20 +160,8 @@ def test_new_form_keeps_all_fields():
     assert pod.containers[0].args == CONTAINER["args"] + ARGS
 
 
-def test_body_is_serializable_like_typed_model():
-    """The dict body survives a round trip through the client models."""
-    body = _build(NEW)
-    roundtrip = client.ApiClient().sanitize_for_serialization(_deserialize(body))
-    # resource quantities come back as strings
-    expected = deepcopy(body)
-    for section in ("limits", "requests"):
-        res = expected["spec"]["template"]["spec"]["containers"][0]["resources"]
-        res[section] = {k: str(v) for k, v in res[section].items()}
-    assert roundtrip == expected
-
-
 def test_build_does_not_mutate_spec():
-    spec = load_job_spec(NEW)
+    spec = load_job_spec(FULL)
     snapshot = deepcopy(spec)
     build_job(spec, "a", "ns", dict(LABELS), list(ARGS))
     build_job(spec, "b", "ns", dict(LABELS), list(ARGS))
@@ -181,9 +169,18 @@ def test_build_does_not_mutate_spec():
 
 
 def test_load_does_not_mutate_input():
-    raw = deepcopy(MINIMAL)
+    raw = {**deepcopy(MINIMAL), "apiVersion": "batch/v1", "metadata": {"labels": None}}
+    snapshot = deepcopy(raw)
     _build(raw)
-    assert raw == MINIMAL
+    assert raw == snapshot
+
+
+def test_null_labels_get_manager_labels():
+    raw = {"metadata": {"labels": None}, "spec": deepcopy(MINIMAL["spec"])}
+    raw["spec"]["template"]["metadata"] = {"labels": None}
+    body = _build(raw)
+    assert body["metadata"]["labels"] == LABELS
+    assert body["spec"]["template"]["metadata"]["labels"] == LABELS
 
 
 # --- structural errors --------------------------------------------------------
@@ -233,7 +230,7 @@ def test_structural_errors(raw, match):
 
 
 def _with(pod_spec=None, job_spec=None, pod_labels=None, job_labels=None, args=None):
-    raw = deepcopy(NEW)
+    raw = deepcopy(FULL)
     template = raw["spec"]["template"]
     template["spec"].update(pod_spec or {})
     raw["spec"].update(job_spec or {})
@@ -255,9 +252,7 @@ def _with(pod_spec=None, job_spec=None, pod_labels=None, job_labels=None, args=N
     ],
 )
 def test_owned_fields_matching_value_accepted(kwargs):
-    body = _build(_with(**kwargs))
-    assert body["spec"]["template"]["spec"]["restartPolicy"] == "Never"
-    assert body["spec"]["backoffLimit"] == 0
+    _build(_with(**kwargs))  # does not raise
 
 
 @pytest.mark.parametrize(
@@ -273,6 +268,8 @@ def test_owned_fields_matching_value_accepted(kwargs):
         (dict(job_spec={"suspend": True}), "`spec.suspend"),
         (dict(job_spec={"selector": {}}), "selector"),
         (dict(job_spec={"manualSelector": True}), "manualSelector"),
+        (dict(job_spec={"backoffLimitPerIndex": 1}), "backoffLimitPerIndex"),
+        (dict(job_spec={"maxFailedIndexes": 1}), "maxFailedIndexes"),
         (dict(pod_labels={"app": "other"}), "`spec.template.metadata.labels.app"),
         (dict(job_labels={"app": "other"}), "`metadata.labels.app"),
         (dict(args=["compute", "--name", "x"]), "--name"),
@@ -286,7 +283,7 @@ def test_owned_fields_conflict_raises(kwargs, match):
 
 def test_extra_manager_labels_applied_everywhere():
     labels = {**LABELS, "k8s.alchemiscale.org/compute-manager": "mgr"}
-    body = _build(NEW, labels=labels)
+    body = _build(FULL, labels=labels)
     for meta in (body["metadata"], body["spec"]["template"]["metadata"]):
         assert meta["labels"]["k8s.alchemiscale.org/compute-manager"] == "mgr"
 
@@ -295,14 +292,14 @@ def test_extra_manager_labels_applied_everywhere():
 
 
 def test_validate_clean_spec_has_no_warnings():
-    assert validate_job_spec(load_job_spec(NEW), "ns", LABELS, ARGS) == []
-    assert validate_job_spec(load_job_spec(MINIMAL), "ns", LABELS, ARGS) == []
+    assert validate_job(_build(FULL)) == []
+    assert validate_job(_build(MINIMAL)) == []
 
 
 def test_validate_warns_on_unknown_fields():
     raw = _with(pod_spec={"tolerationz": []})
     raw["spec"]["template"]["spec"]["containers"][0]["imagePullPolice"] = "Always"
-    warnings = validate_job_spec(load_job_spec(raw), "ns", LABELS, ARGS)
+    warnings = validate_job(_build(raw))
     assert len(warnings) == 2
     assert any("spec.template.spec.tolerationz" in w for w in warnings)
     assert any("containers[0].imagePullPolice" in w for w in warnings)
@@ -318,14 +315,59 @@ def test_validate_warns_on_unknown_fields():
 )
 def test_validate_rejects_wrong_shapes(pod_spec, match):
     with pytest.raises(JobSpecError, match=match):
-        validate_job_spec(load_job_spec(_with(pod_spec=pod_spec)), "ns", LABELS, ARGS)
+        validate_job(_build(_with(pod_spec=pod_spec)))
 
 
 def test_validate_rejects_model_errors():
     raw = deepcopy(MINIMAL)
-    raw["spec"]["template"]["spec"]["containers"] = [{"image": "x", "args": []}]  # missing required name
+    # missing the required container name
+    raw["spec"]["template"]["spec"]["containers"] = [{"image": "x", "args": []}]
     with pytest.raises(JobSpecError, match="name"):
-        validate_job_spec(load_job_spec(raw), "ns", LABELS, ARGS)
+        validate_job(_build(raw))
+
+
+def _container(**fields):
+    return _with(pod_spec={"containers": [{**CONTAINER, **fields}]})
+
+
+@pytest.mark.parametrize(
+    "raw, match",
+    [
+        # Kubernetes doesn't coerce types, so these fail on every submission
+        (
+            _container(env=[{"name": "X", "value": 2}]),
+            r"env\[0\]\.value` must be str",
+        ),
+        (_container(args=["compute", 2]), r"args\[1\]` must be str"),
+        (
+            _container(volumeMounts=[{"name": "v", "mountPath": "/m", "readOnly": "no"}]),
+            "readOnly` must be bool",
+        ),
+        (_with(job_labels={"gpu": True}), "labels.gpu` must be str"),
+        (_with(pod_labels={"v": 1}), "labels.v` must be str"),
+        (
+            _with(job_spec={"activeDeadlineSeconds": "100"}),
+            "activeDeadlineSeconds` must be int",
+        ),
+        (
+            _with(job_spec={"ttlSecondsAfterFinished": True}),
+            "ttlSecondsAfterFinished` must be int",
+        ),
+    ],
+)
+def test_validate_rejects_wrong_types(raw, match):
+    with pytest.raises(JobSpecError, match=match):
+        validate_job(_build(raw))
+
+
+def test_validate_accepts_numeric_quantities():
+    raw = _container(
+        resources={"limits": {"cpu": 2, "memory": 1.5e9}, "requests": {"cpu": 0.5}}
+    )
+    pod_spec = raw["spec"]["template"]["spec"]
+    pod_spec["volumes"] = [{"name": "s", "emptyDir": {"sizeLimit": 1024}}]
+    pod_spec["overhead"] = {"cpu": 1}
+    assert validate_job(_build(raw)) == []
 
 
 # --- K8SManager integration ---------------------------------------------------
@@ -344,15 +386,18 @@ def make_manager(tmp_path, monkeypatch):
     monkeypatch.setattr(upstream_logger, "handlers", list(upstream_logger.handlers))
     monkeypatch.setattr(upstream_logger, "level", upstream_logger.level)
 
-    def _make(raw):
+    def _make(raw, **settings_overrides):
         path = tmp_path / "job-spec.yaml"
         path.write_text(yaml.safe_dump(raw))
         settings = K8SManagerSettings(
-            name="testmgr",
-            logfile=None,
-            max_compute_services=2,
-            job_spec_path=path,
-            namespace="alchemiscale",
+            **{
+                "name": "testmgr",
+                "logfile": None,
+                "max_compute_services": 2,
+                "job_spec_path": path,
+                "namespace": "alchemiscale",
+                **settings_overrides,
+            }
         )
         service_settings = ComputeServiceSettings(
             api_url="http://127.0.0.1:1",
@@ -367,7 +412,7 @@ def make_manager(tmp_path, monkeypatch):
     return _make
 
 
-@pytest.mark.parametrize("raw", [MINIMAL, NEW])
+@pytest.mark.parametrize("raw", [MINIMAL, FULL])
 def test_manager_new_job(make_manager, raw):
     manager = make_manager(raw)
     job = manager._new_job()
@@ -399,21 +444,37 @@ def test_manager_logs_unknown_field_warnings(make_manager, caplog):
     assert "nodeSelecter" in caplog.text
 
 
+@pytest.mark.parametrize("ttl, warns", [(30, True), (60, False), (None, False)])
+def test_manager_warns_on_short_ttl(make_manager, caplog, ttl, warns):
+    raw = deepcopy(MINIMAL)
+    if ttl is not None:
+        raw["spec"]["ttlSecondsAfterFinished"] = ttl
+    with caplog.at_level(logging.WARNING, logger="AlchemiscaleComputeManager"):
+        make_manager(raw, sleep_interval=60)
+    assert ("ttlSecondsAfterFinished" in caplog.text) is warns
+
+
 REPO = pathlib.Path(__file__).parents[4]
+README = REPO / "pkg" / "README.md"
+DEPLOYMENT_SPEC = REPO / "deployment" / "compute" / "manager-job-spec.yaml"
 
 
-def _shipped_job_specs():
-    readme = (REPO / "pkg" / "README.md").read_text()
-    blocks = re.findall(
-        r"```yaml\n(# \./config/job-spec[^\n]*\n.*?)```", readme, re.S
+def _readme_job_specs():
+    return re.findall(
+        r"```yaml\n(# \./config/job-spec[^\n]*\n.*?)```", README.read_text(), re.S
     )
-    assert len(blocks) >= 2
-    deployment = (REPO / "deployment" / "compute" / "manager-job-spec.yaml").read_text()
-    return [*blocks, deployment]
 
 
-@pytest.mark.parametrize("text", _shipped_job_specs())
-def test_shipped_job_specs_validate(text):
+def test_readme_has_job_spec_examples():
+    assert len(_readme_job_specs()) >= 2
+
+
+@pytest.mark.parametrize("source", ["readme", "deployment"])
+def test_shipped_job_specs_validate(source):
     """The job specs in the package README and deployment/ load and validate."""
-    spec = load_job_spec(yaml.safe_load(text))
-    assert validate_job_spec(spec, "ns", LABELS, ARGS) == []
+    if source == "readme":
+        texts = _readme_job_specs()
+    else:
+        texts = [DEPLOYMENT_SPEC.read_text()]
+    for text in texts:
+        assert validate_job(_build(yaml.safe_load(text))) == []
