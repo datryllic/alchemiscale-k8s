@@ -182,13 +182,13 @@ spec:
                 values:
                 - NVIDIA-A10
                 - NVIDIA-GeForce-RTX-3090
-      # placeholder: replace with your reservation's taint; list a node's
-      # taints with `kubectl describe node <node>`
+      # allow pods onto nodes tainted `nautilus.io/reservation=alchemiscale`
+      # (any effect); placeholder: replace with your reservation's taint, as
+      # listed by `kubectl describe node <node>`
       tolerations:
       - key: nautilus.io/reservation
         operator: Equal
         value: alchemiscale
-        effect: NoSchedule
       containers:
         - name: alchemiscale-synchronous-container
           image: ghcr.io/openforcefield/alchemiscale-compute:v0.7.1
