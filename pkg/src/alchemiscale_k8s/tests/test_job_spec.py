@@ -47,9 +47,11 @@ VOLUMES = [
     }
 ]
 
-MINIMAL = {"spec": {"containers": [CONTAINER], "volumes": VOLUMES}}
+MINIMAL = {
+    "spec": {"template": {"spec": {"containers": [CONTAINER], "volumes": VOLUMES}}}
+}
 
-NEW = {
+TEMPLATE = {
     "metadata": {
         "labels": {"team": "fah"},
         "annotations": {"example.org/note": "hi"},
@@ -87,9 +89,16 @@ NEW = {
         "priorityClassName": "low",
         "securityContext": {"runAsNonRoot": True},
     },
-    "job": {
-        "metadata": {"labels": {"cost-center": "x"}, "annotations": {"a": "b"}},
-        "spec": {"activeDeadlineSeconds": 86400, "ttlSecondsAfterFinished": 3600},
+}
+
+NEW = {
+    "apiVersion": "batch/v1",
+    "kind": "Job",
+    "metadata": {"labels": {"cost-center": "x"}, "annotations": {"a": "b"}},
+    "spec": {
+        "activeDeadlineSeconds": 86400,
+        "ttlSecondsAfterFinished": 3600,
+        "template": TEMPLATE,
     },
 }
 
@@ -180,22 +189,39 @@ def test_load_does_not_mutate_input():
 # --- structural errors --------------------------------------------------------
 
 
+def _pod(**pod_spec):
+    return {"spec": {"template": {"spec": pod_spec}}}
+
+
 @pytest.mark.parametrize(
     "raw, match",
     [
         ([], "mapping"),
-        ({"spec": {"containers": [CONTAINER]}, "containers": []}, "top-level"),
-        ({"containers": [CONTAINER], "volumes": VOLUMES}, "belong under `spec`"),
-        ({"spec": {}}, "non-empty list"),
-        ({"spec": {"containers": []}}, "non-empty list"),
-        ({"spec": {"containers": [{"name": "a"}]}}, "args"),
-        ({"spec": {"containers": [CONTAINER]}, "job": {"activeDeadlineSeconds": 1}}, "job.spec"),
-        ({"metadata": {"name": "x"}, "spec": {"containers": [CONTAINER]}}, "metadata"),
+        ({**MINIMAL, "apiVersion": "batch/v2"}, "apiVersion"),
+        ({**MINIMAL, "kind": "CronJob"}, "kind"),
+        ({**MINIMAL, "containers": []}, "top-level"),
+        ({"containers": [CONTAINER], "volumes": VOLUMES}, "spec.template.spec"),
+        ({"spec": {"containers": [CONTAINER]}}, "non-empty list"),
+        ({"spec": {"template": {"containers": [CONTAINER]}}}, "spec.template.spec"),
+        ({"spec": []}, "`spec` must be a mapping"),
+        ({"spec": {"template": []}}, "`spec.template` must be a mapping"),
+        (_pod(), "non-empty list"),
+        (_pod(containers=[]), "non-empty list"),
+        (_pod(containers=["a"]), r"containers\[0\]` must be a mapping"),
+        (_pod(containers=[{"name": "a"}]), "args"),
+        ({**MINIMAL, "metadata": {"name": "x"}}, "`metadata`"),
         (
-            {"spec": {"containers": [CONTAINER]}, "job": {"metadata": {"namespace": "x"}}},
-            "job.metadata",
+            {
+                "spec": {
+                    "template": {
+                        "metadata": {"namespace": "x"},
+                        "spec": {"containers": [CONTAINER]},
+                    }
+                }
+            },
+            "spec.template.metadata",
         ),
-        ({"metadata": {"labels": ["a"]}, "spec": {"containers": [CONTAINER]}}, "labels"),
+        ({**MINIMAL, "metadata": {"labels": ["a"]}}, "labels"),
     ],
 )
 def test_structural_errors(raw, match):
@@ -208,12 +234,13 @@ def test_structural_errors(raw, match):
 
 def _with(pod_spec=None, job_spec=None, pod_labels=None, job_labels=None, args=None):
     raw = deepcopy(NEW)
-    raw["spec"].update(pod_spec or {})
-    raw["job"]["spec"].update(job_spec or {})
-    raw["metadata"]["labels"].update(pod_labels or {})
-    raw["job"]["metadata"]["labels"].update(job_labels or {})
+    template = raw["spec"]["template"]
+    template["spec"].update(pod_spec or {})
+    raw["spec"].update(job_spec or {})
+    template["metadata"]["labels"].update(pod_labels or {})
+    raw["metadata"]["labels"].update(job_labels or {})
     if args is not None:
-        raw["spec"]["containers"][0]["args"] = args
+        template["spec"]["containers"][0]["args"] = args
     return raw
 
 
@@ -236,16 +263,18 @@ def test_owned_fields_matching_value_accepted(kwargs):
 @pytest.mark.parametrize(
     "kwargs, match",
     [
-        (dict(pod_spec={"restartPolicy": "OnFailure"}), "spec.restartPolicy"),
-        (dict(job_spec={"backoffLimit": 3}), "job.spec.backoffLimit"),
-        (dict(job_spec={"parallelism": 2}), "job.spec.parallelism"),
-        (dict(job_spec={"completions": 5}), "job.spec.completions"),
-        (dict(job_spec={"suspend": True}), "job.spec.suspend"),
-        (dict(job_spec={"template": {}}), "template"),
+        (
+            dict(pod_spec={"restartPolicy": "OnFailure"}),
+            "`spec.template.spec.restartPolicy",
+        ),
+        (dict(job_spec={"backoffLimit": 3}), "`spec.backoffLimit"),
+        (dict(job_spec={"parallelism": 2}), "`spec.parallelism"),
+        (dict(job_spec={"completions": 5}), "`spec.completions"),
+        (dict(job_spec={"suspend": True}), "`spec.suspend"),
         (dict(job_spec={"selector": {}}), "selector"),
         (dict(job_spec={"manualSelector": True}), "manualSelector"),
-        (dict(pod_labels={"app": "other"}), "metadata.labels.app"),
-        (dict(job_labels={"app": "other"}), "job.metadata.labels.app"),
+        (dict(pod_labels={"app": "other"}), "`spec.template.metadata.labels.app"),
+        (dict(job_labels={"app": "other"}), "`metadata.labels.app"),
         (dict(args=["compute", "--name", "x"]), "--name"),
         (dict(args=["compute", "--compute-manager-id=x"]), "--compute-manager-id"),
     ],
@@ -256,10 +285,10 @@ def test_owned_fields_conflict_raises(kwargs, match):
 
 
 def test_extra_manager_labels_applied_everywhere():
-    labels = {**LABELS, "alchemiscale.org/compute-manager": "mgr"}
+    labels = {**LABELS, "k8s.alchemiscale.org/compute-manager": "mgr"}
     body = _build(NEW, labels=labels)
     for meta in (body["metadata"], body["spec"]["template"]["metadata"]):
-        assert meta["labels"]["alchemiscale.org/compute-manager"] == "mgr"
+        assert meta["labels"]["k8s.alchemiscale.org/compute-manager"] == "mgr"
 
 
 # --- validation ---------------------------------------------------------------
@@ -272,7 +301,7 @@ def test_validate_clean_spec_has_no_warnings():
 
 def test_validate_warns_on_unknown_fields():
     raw = _with(pod_spec={"tolerationz": []})
-    raw["spec"]["containers"][0]["imagePullPolice"] = "Always"
+    raw["spec"]["template"]["spec"]["containers"][0]["imagePullPolice"] = "Always"
     warnings = validate_job_spec(load_job_spec(raw), "ns", LABELS, ARGS)
     assert len(warnings) == 2
     assert any("spec.template.spec.tolerationz" in w for w in warnings)
@@ -294,7 +323,7 @@ def test_validate_rejects_wrong_shapes(pod_spec, match):
 
 def test_validate_rejects_model_errors():
     raw = deepcopy(MINIMAL)
-    raw["spec"]["containers"] = [{"image": "x", "args": []}]  # missing required name
+    raw["spec"]["template"]["spec"]["containers"] = [{"image": "x", "args": []}]  # missing required name
     with pytest.raises(JobSpecError, match="name"):
         validate_job_spec(load_job_spec(raw), "ns", LABELS, ARGS)
 
@@ -375,7 +404,9 @@ REPO = pathlib.Path(__file__).parents[4]
 
 def _shipped_job_specs():
     readme = (REPO / "pkg" / "README.md").read_text()
-    blocks = re.findall(r"```yaml\n(# \./config/job-spec[^\n]*\n.*?)```", readme, re.S)
+    blocks = re.findall(
+        r"```yaml\n(# \./config/job-spec[^\n]*\n.*?)```", readme, re.S
+    )
     assert len(blocks) >= 2
     deployment = (REPO / "deployment" / "compute" / "manager-job-spec.yaml").read_text()
     return [*blocks, deployment]

@@ -129,7 +129,13 @@ def make_manager(cluster, tmp_path, monkeypatch):
         yaml.safe_dump(
             {
                 "spec": {
-                    "containers": [{"name": "compute", "image": "img", "args": []}]
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {"name": "compute", "image": "img", "args": []}
+                            ]
+                        }
+                    }
                 }
             }
         )

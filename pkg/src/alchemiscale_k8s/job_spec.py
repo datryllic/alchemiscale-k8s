@@ -1,23 +1,28 @@
 """Loading, validating and rendering the compute Job spec file.
 
-The job spec file (``K8SManagerSettings.job_spec_path``) is a pod template,
-written in ordinary Kubernetes camelCase YAML::
+The job spec file (``K8SManagerSettings.job_spec_path``) is a Job template:
+an ordinary Kubernetes Job manifest in camelCase YAML, without the Job's
+name::
 
-    metadata:          # optional; pod template labels and annotations
+    apiVersion: batch/v1   # optional
+    kind: Job              # optional
+    metadata:              # optional; Job labels and annotations
       labels: {...}
       annotations: {...}
-    spec:              # required; any PodSpec field
-      containers: [...]
-      volumes: [...]
-      affinity: {...}
-      tolerations: [...]
-    job:               # optional; Job-level settings
-      metadata:        # optional; Job labels and annotations
-        labels: {...}
-        annotations: {...}
-      spec:            # optional; any JobSpec field except ``template``
-        activeDeadlineSeconds: 86400
-        ttlSecondsAfterFinished: 3600
+    spec:                  # any JobSpec field
+      activeDeadlineSeconds: 86400
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:          # optional; pod labels and annotations
+          labels: {...}
+        spec:              # any PodSpec field
+          containers: [...]
+          volumes: [...]
+          affinity: {...}
+
+This is the shape of Kubernetes' ``JobTemplateSpec`` (a CronJob's
+``jobTemplate``), so a Job written for ``kubectl`` can be used as-is once
+its name is removed.
 
 The manager owns a few values and overlays them on every Job (see
 :func:`build_job`). A user value for a manager-owned field is accepted only
@@ -41,7 +46,7 @@ class JobSpecError(ValueError):
     """The job spec file is malformed or conflicts with manager-owned values."""
 
 
-_TOP_LEVEL_KEYS = {"metadata", "spec", "job"}
+_TOP_LEVEL = {"apiVersion": "batch/v1", "kind": "Job"}
 _METADATA_KEYS = {"labels", "annotations"}
 
 # manager-owned values; a user value is accepted only if it equals these
@@ -57,57 +62,60 @@ JOB_SPEC_OWNED = {
     "suspend": False,
 }
 # JobSpec fields the user may not set at all
-JOB_SPEC_FORBIDDEN = {"template", "selector", "manualSelector"}
+JOB_SPEC_FORBIDDEN = {"selector", "manualSelector"}
 # args the manager appends to the first container
 MANAGER_ARGS = ("--name", "--compute-manager-id")
 
 
 def load_job_spec(raw) -> dict:
-    """Normalize the parsed job spec file into the pod template form.
+    """Normalize the parsed job spec file.
 
-    Returns a dict with ``metadata``, ``spec`` and ``job`` (itself with
-    ``metadata`` and ``spec``), all present. Raises :class:`JobSpecError` for
+    Returns a dict with ``metadata``, ``spec``, ``spec.template``,
+    ``spec.template.metadata`` and ``spec.template.spec`` all present, and
+    without ``apiVersion``/``kind``. Raises :class:`JobSpecError` for
     structural problems.
     """
     if not isinstance(raw, dict):
         raise JobSpecError("job spec must be a YAML mapping")
 
     raw = deepcopy(raw)
-    unknown = raw.keys() - _TOP_LEVEL_KEYS
+    for key, expected in _TOP_LEVEL.items():
+        if raw.pop(key, expected) != expected:
+            raise JobSpecError(f"`{key}` must be {expected!r} if set")
+    unknown = raw.keys() - {"metadata", "spec"}
     if unknown:
         raise JobSpecError(
             f"unexpected top-level key(s) {sorted(unknown)} in job spec; "
-            "PodSpec fields such as `containers` belong under `spec`"
+            "the file is a Job manifest: JobSpec fields belong under `spec`, "
+            "and PodSpec fields under `spec.template.spec`"
         )
 
-    job = raw.get("job") or {}
-    if not isinstance(job, dict):
-        raise JobSpecError("`job` must be a mapping")
-    unknown = job.keys() - {"metadata", "spec"}
+    job_spec = _check_mapping(raw.get("spec"), "spec")
+    template = _check_mapping(job_spec.get("template"), "spec.template")
+    unknown = template.keys() - {"metadata", "spec"}
     if unknown:
         raise JobSpecError(
-            f"unexpected key(s) {sorted(unknown)} under `job`; "
-            "JobSpec fields belong under `job.spec`"
+            f"unexpected key(s) {sorted(unknown)} under `spec.template`; "
+            "PodSpec fields belong under `spec.template.spec`"
         )
-
+    job_spec["template"] = {
+        "metadata": _check_metadata(template.get("metadata"), "spec.template.metadata"),
+        "spec": _check_mapping(template.get("spec"), "spec.template.spec"),
+    }
     spec = {
         "metadata": _check_metadata(raw.get("metadata"), "metadata"),
-        "spec": _check_mapping(raw.get("spec"), "spec"),
-        "job": {
-            "metadata": _check_metadata(job.get("metadata"), "job.metadata"),
-            "spec": _check_mapping(job.get("spec"), "job.spec"),
-        },
+        "spec": job_spec,
     }
 
-    containers = spec["spec"].get("containers")
+    where = "spec.template.spec.containers"
+    containers = job_spec["template"]["spec"].get("containers")
     if not isinstance(containers, list) or not containers:
-        raise JobSpecError("`spec.containers` must be a non-empty list")
+        raise JobSpecError(f"`{where}` must be a non-empty list")
     if not isinstance(containers[0], dict):
-        raise JobSpecError("`spec.containers[0]` must be a mapping")
-    args = containers[0].get("args")
-    if not isinstance(args, list):
+        raise JobSpecError(f"`{where}[0]` must be a mapping")
+    if not isinstance(containers[0].get("args"), list):
         raise JobSpecError(
-            "`spec.containers[0].args` must be a list; the manager appends "
+            f"`{where}[0].args` must be a list; the manager appends "
             f"{' and '.join(MANAGER_ARGS)} to it"
         )
 
@@ -172,20 +180,19 @@ def build_job(
         A camelCase Job body suitable for ``BatchV1Api.create_namespaced_job``.
     """
     job_spec = deepcopy(job_spec)
-    pod_meta = job_spec["metadata"]
-    pod_spec = job_spec["spec"]
-    job_meta = job_spec["job"]["metadata"]
-    job_body_spec = job_spec["job"]["spec"]
+    job_meta = job_spec["metadata"]
+    spec = job_spec["spec"]
+    pod_meta = spec["template"]["metadata"]
+    pod_spec = spec["template"]["spec"]
 
-    _overlay_owned(pod_spec, POD_SPEC_OWNED, "spec")
-
-    forbidden = JOB_SPEC_FORBIDDEN & job_body_spec.keys()
+    forbidden = JOB_SPEC_FORBIDDEN & spec.keys()
     if forbidden:
         raise JobSpecError(
-            f"`job.spec` may not set {sorted(forbidden)}; the manager builds "
-            "the pod template from `metadata`/`spec`"
+            f"`spec` may not set {sorted(forbidden)}; the manager relies on "
+            "the selector Kubernetes generates"
         )
-    _overlay_owned(job_body_spec, JOB_SPEC_OWNED, "job.spec")
+    _overlay_owned(spec, JOB_SPEC_OWNED, "spec")
+    _overlay_owned(pod_spec, POD_SPEC_OWNED, "spec.template.spec")
 
     args = pod_spec["containers"][0]["args"]
     for arg in args:
@@ -193,26 +200,20 @@ def build_job(
             arg == flag or arg.startswith(flag + "=") for flag in MANAGER_ARGS
         ):
             raise JobSpecError(
-                f"`spec.containers[0].args` may not contain {arg!r}; "
-                "the manager sets it"
+                f"`spec.template.spec.containers[0].args` may not contain "
+                f"{arg!r}; the manager sets it"
             )
     args.extend(extra_args)
 
-    pod_meta["labels"] = pod_meta.get("labels") or {}
     job_meta["labels"] = job_meta.get("labels") or {}
-    _overlay_owned(pod_meta["labels"], labels, "metadata.labels")
-    _overlay_owned(job_meta["labels"], labels, "job.metadata.labels")
+    pod_meta["labels"] = pod_meta.get("labels") or {}
+    _overlay_owned(job_meta["labels"], labels, "metadata.labels")
+    _overlay_owned(pod_meta["labels"], labels, "spec.template.metadata.labels")
 
     job_meta["name"] = name
     job_meta["namespace"] = namespace
-    job_body_spec["template"] = {"metadata": pod_meta, "spec": pod_spec}
 
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": job_meta,
-        "spec": job_body_spec,
-    }
+    return {**_TOP_LEVEL, "metadata": job_meta, "spec": spec}
 
 
 def validate_job_spec(
