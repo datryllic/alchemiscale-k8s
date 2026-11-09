@@ -36,9 +36,9 @@ spec:
       terminationGracePeriodSeconds: 120
       containers:
       - name: alchemiscale-k8s-manager-container
-        # Any image with the `alchemiscale-k8s` package installed (see
-        # pkg/README.md); replace with your own build.
-        image: ghcr.io/datryllic/alchemiscale-k8s:latest
+        # placeholder: set to your own image with the `alchemiscale-k8s`
+        # package installed (see pkg/README.md)
+        image: registry.example.com/alchemiscale-k8s:vX.Y.Z
         command: ["alchemiscale-k8s"]
         # If a previous manager pod was killed without deregistering (e.g.
         # OOMKilled or lost node), add "--steal" to take over its

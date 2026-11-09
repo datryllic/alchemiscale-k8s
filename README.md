@@ -2,15 +2,20 @@
 
 An `alchemiscale` deployment for kubernetes.
 
-This repo presents a fairly complete set of kubernetes ("k8s") resources that give a usable [`alchemiscale`](https://github.com/openforcefield/alchemiscale) deployment, featuring both server and compute components.
+This repo presents a fairly complete set of kubernetes ("k8s") resources that give a usable [`alchemiscale`](https://github.com/OpenFreeEnergy/alchemiscale) deployment, featuring both server and compute components.
 
 ## deployment instructions
 
 To deploy `alchemiscale` to a k8s cluster, from within the `deployment/` directory:
 
+0. Choose your images.
+   The `alchemiscale-server` and `alchemiscale-compute` images in these manifests are placeholders tagged `vX.Y.Z`.
+   Set them to a [released version](https://github.com/OpenFreeEnergy/alchemiscale/releases) (images are published at `ghcr.io/openfreeenergy`), or to your own builds, using the same `alchemiscale` version for the server and compute images.
+   If you run the compute manager in-cluster ([compute/manager-deployment.yaml](deployment/compute/manager-deployment.yaml)), its image is also a placeholder; build your own with [`alchemiscale-k8s`](pkg/README.md) installed.
+
 1. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
 
-2. Set your desired secrets for the server components in [server/secrets.sh](server/secrets.sh).
+2. Set your desired secrets for the server components in [server/secrets.sh](deployment/server/secrets.sh).
    Take note of the recommendations in the comments guiding you on the choices.
    Deploy: `bash server/secrets.sh`.
 
@@ -25,9 +30,9 @@ To deploy `alchemiscale` to a k8s cluster, from within the `deployment/` directo
 7. Follow [instructions for creating user and compute identities](https://docs.alchemiscale.org/en/latest/operations.html#add-users); use `kubectl exec` instead of `docker run` for these calls.
 You will need at least one user identity and one compute identity with permissions on at least one ``Scope`` to make use of ``alchemiscale``.
 
-8. Set your desired settings for the compute services in [compute/synchronous-compute-settings.yaml](compute/synchronous-compute-settings.yaml).
+8. Set your desired settings for the compute services in [compute/synchronous-compute-settings.yaml](deployment/compute/synchronous-compute-settings.yaml).
    Deploy these as a secret: `bash compute/secrets.sh`.
    Refer to the [alchemiscale compute documentation](https://docs.alchemiscale.org/en/latest/compute.html#kubernetes-cluster) for more details.
 
-9. Set desired number of replicas in [compute/compute-services.yaml](compute/compute-services.yaml).
+9. Set desired number of replicas in [compute/compute-services.yaml](deployment/compute/compute-services.yaml).
    Deploy compute services: `kubectl apply -f compute/compute-services.yaml`

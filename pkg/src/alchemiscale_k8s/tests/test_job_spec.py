@@ -25,7 +25,7 @@ ARGS = ["--name", "mgr.abc", "--compute-manager-id", "mgr-id"]
 
 CONTAINER = {
     "name": "alchemiscale-synchronous-container",
-    "image": "ghcr.io/openforcefield/alchemiscale-compute:v0.7.1",
+    "image": "img",
     "args": ["compute", "synchronous", "-c", "/mnt/settings/service-config.yaml"],
     "resources": {
         "limits": {"cpu": 2, "memory": "12Gi", "nvidia.com/gpu": 1},
