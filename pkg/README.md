@@ -286,7 +286,8 @@ kubectl apply -f manager-deployment.yaml
 ```
 
 [`manager-deployment.yaml`](../deployment/compute/manager-deployment.yaml) runs `alchemiscale-k8s manager start -c /mnt/manager/manager-settings.yaml -s /mnt/settings/synchronous-compute-settings.yaml` as the `alchemiscale-k8s-manager` ServiceAccount.
-Set its `image` to an image with `alchemiscale-k8s` installed.
+Its `image` is a placeholder: set it to your own image with `alchemiscale-k8s` installed (see [Installation](#installation)).
+No image is published for the manager, since what else it needs installed depends on your deployment.
 Other details:
 
 - It runs a single replica with `strategy: Recreate`, so the old manager pod stops before a new one starts and two managers with the same `name` never overlap.

@@ -11,6 +11,7 @@ To deploy `alchemiscale` to a k8s cluster, from within the `deployment/` directo
 0. Choose your images.
    The `alchemiscale-server` and `alchemiscale-compute` images in these manifests are placeholders tagged `vX.Y.Z`.
    Set them to a [released version](https://github.com/OpenFreeEnergy/alchemiscale/releases) (images are published at `ghcr.io/openfreeenergy`), or to your own builds, using the same `alchemiscale` version for the server and compute images.
+   If you run the compute manager in-cluster ([compute/manager-deployment.yaml](deployment/compute/manager-deployment.yaml)), its image is also a placeholder; build your own with [`alchemiscale-k8s`](pkg/README.md) installed.
 
 1. Deploy namespace: `kubectl apply -f server/alchemiscale-namespace.yaml`.
 
